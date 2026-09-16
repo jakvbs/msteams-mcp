@@ -13,6 +13,7 @@ import {
   extractCsaToken,
   extractSubstrateToken,
   extractSkypeSpacesToken,
+  extractGraphToken,
   extractRegionConfig,
   getUserProfile,
   clearTokenCache,
@@ -90,6 +91,39 @@ export async function requireSubstrateTokenAsync(): Promise<Result<string, McpEr
   }
 
   return ok(token);
+}
+
+/**
+ * Requires a valid Microsoft Graph token with proactive refresh.
+ *
+ * Use for the mailbox-settings (out-of-office / automatic replies) API.
+ * The Graph scope is refreshed opportunistically alongside the core Teams
+ * scopes; on restricted tenants where Graph is not granted this returns an
+ * auth error instructing the caller to re-login.
+ */
+export async function requireGraphTokenAsync(): Promise<Result<string, McpError>> {
+  const current = extractGraphToken();
+  const needsRefresh = !current || current.expiry.getTime() - Date.now() < TOKEN_REFRESH_THRESHOLD_MS;
+  if (needsRefresh) {
+    const refreshResult = await refreshTokensViaBrowser();
+    if (refreshResult.ok) {
+      const graph = extractGraphToken();
+      if (graph && graph.expiry.getTime() > Date.now()) {
+        return ok(graph.token);
+      }
+    }
+    // Refresh failed but token might still be valid, continue
+  }
+
+  const graph = extractGraphToken();
+  if (!graph || graph.expiry.getTime() <= Date.now()) {
+    return err(createError(
+      ErrorCode.AUTH_EXPIRED,
+      'ACTION REQUIRED: No valid Microsoft Graph token for out-of-office. Your tenant may not grant it, or the session expired — call teams_login and retry.',
+    ));
+  }
+
+  return ok(graph.token);
 }
 
 /**

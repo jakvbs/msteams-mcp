@@ -138,6 +138,14 @@ const REFRESH_SCOPES = [
     resource: 'chatsvcagg.teams.microsoft.com',
     scopes: 'https://chatsvcagg.teams.microsoft.com/.default offline_access',
   },
+  {
+    /** Microsoft Graph — mailbox settings (out-of-office / automatic replies).
+     *  Optional: restricted / GCC-High / DoD tenants may not grant it, so its
+     *  failure must never abort the refresh of the core Teams scopes. */
+    resource: 'graph.microsoft.com',
+    scopes: 'https://graph.microsoft.com/.default offline_access',
+    optional: true,
+  },
 ] as const;
 
 /** HTTP request timeout for token refresh calls (ms). */
@@ -663,7 +671,14 @@ export async function refreshTokensViaHttp(): Promise<Result<HttpRefreshResult>>
     );
 
     if (!result.ok) {
-      // If any refresh fails with auth error, the refresh token is likely expired
+      // Optional scopes (e.g. Graph on restricted/GCC tenants) must never abort the
+      // whole refresh — the core Teams/Substrate scopes still succeed without them.
+      if ('optional' in scope && scope.optional) {
+        log.warn('token-refresh-http', `Optional scope ${scope.resource} refresh failed (continuing): ${result.error.message}`);
+        scopeErrors.push(`${scope.resource}: ${result.error.message}`);
+        continue;
+      }
+      // If any required refresh fails with auth error, the refresh token is likely expired
       if (result.error.code === ErrorCode.AUTH_EXPIRED) {
         return err(createError(
           ErrorCode.AUTH_EXPIRED,

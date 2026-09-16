@@ -210,7 +210,7 @@ describe('refreshTokensViaHttp', () => {
 
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value.tokensRefreshed).toBe(3);
+      expect(result.value.tokensRefreshed).toBe(4);
       expect(result.value.skypeTokenRefreshed).toBe(true);
       expect(result.value.refreshTokenRotated).toBe(true);
     }
@@ -221,8 +221,36 @@ describe('refreshTokensViaHttp', () => {
     // Verify token cache was cleared
     expect(clearTokenCache).toHaveBeenCalledOnce();
 
-    // Verify fetch was called 4 times (3 token refreshes + 1 skype exchange)
-    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(4);
+    // Verify fetch was called 5 times (4 token refreshes + 1 skype exchange)
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(5);
+  });
+
+  it('keeps core scopes when the optional Graph refresh is rejected', async () => {
+    const state = makeMockSessionState();
+    vi.mocked(readSessionState).mockReturnValue(state);
+    vi.mocked(getTeamsOrigin).mockReturnValue(state.origins[0]);
+    vi.mocked(fetch).mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (String(url).includes('login.microsoftonline.com')) {
+        const scope = new URLSearchParams(String(init?.body)).get('scope') ?? '';
+        if (scope.includes('graph.microsoft.com')) {
+          return new Response(JSON.stringify({ error: 'invalid_grant' }), { status: 400 });
+        }
+        return new Response(JSON.stringify(makeTokenResponse(scope)), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({
+        tokens: { skypeToken: 'new-skype-token', expiresIn: 86400 },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    const result = await refreshTokensViaHttp();
+
+    expect(result.ok && result.value.tokensRefreshed).toBe(3);
   });
 
   it('updates skypetoken_asm cookies in session state', async () => {
@@ -313,8 +341,8 @@ describe('refreshTokensViaHttp', () => {
 
     expect(result.ok).toBe(true);
     if (result.ok) {
-      // 2 of 3 scopes succeeded (first one failed with network error)
-      expect(result.value.tokensRefreshed).toBe(2);
+      // 3 of 4 scopes succeeded (first one failed with network error)
+      expect(result.value.tokensRefreshed).toBe(3);
     }
   });
 
@@ -341,7 +369,7 @@ describe('refreshTokensViaHttp', () => {
     // Should still succeed — skype token failure is non-fatal
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value.tokensRefreshed).toBe(3);
+      expect(result.value.tokensRefreshed).toBe(4);
       expect(result.value.skypeTokenRefreshed).toBe(false);
     }
   });

@@ -322,6 +322,37 @@ export function extractSkypeSpacesToken(state?: SessionState): string | null {
   });
 }
 
+/**
+ * Extracts the newest valid Microsoft Graph access token from session state.
+ *
+ * Used for the mailbox-settings (out-of-office / automatic replies) API.
+ */
+export function extractGraphToken(state?: SessionState): TokenCandidate | null {
+  return withLocalStorage(state, (localStorage) => {
+    let bestCandidate: TokenCandidate | null = null;
+
+    for (const item of localStorage) {
+      try {
+        const entry = JSON.parse(item.value);
+        if (entry.credentialType !== 'AccessToken') continue;
+        if (typeof entry.target !== 'string' || !/(?:^|\s)https:\/\/graph\.microsoft\.com\//.test(entry.target)) continue;
+        if (!isJwtToken(entry.secret)) continue;
+
+        const expiry = getJwtExpiry(entry.secret);
+        if (!expiry || expiry.getTime() <= Date.now()) continue;
+
+        if (!bestCandidate || expiry > bestCandidate.expiry) {
+          bestCandidate = { token: entry.secret, expiry };
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    return bestCandidate;
+  });
+}
+
 /** Region configuration from Teams discovery. */
 export interface RegionConfig {
   /** Base region (e.g., "amer", "emea", "apac") - used by chatsvc, csa APIs. */
