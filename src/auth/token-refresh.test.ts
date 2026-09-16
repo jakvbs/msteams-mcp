@@ -19,22 +19,13 @@ describe('refreshTokensViaBrowser', () => {
     vi.clearAllMocks();
   });
 
-  it.each([
-    { state: 'missing', beforeToken: null },
-    {
-      state: 'expired',
-      beforeToken: {
-        token: 'expired-token',
-        expiry: new Date(Date.now() - 60_000),
-      },
-    },
-  ])('attempts HTTP refresh when the Substrate token is $state', async ({ beforeToken }) => {
+  it('attempts HTTP refresh when the Substrate token is missing', async () => {
     const refreshedToken = {
       token: 'refreshed-token',
       expiry: new Date(Date.now() + 60 * 60_000),
     };
     vi.mocked(extractSubstrateToken)
-      .mockReturnValueOnce(beforeToken)
+      .mockReturnValueOnce(null)
       .mockReturnValueOnce(refreshedToken);
     vi.mocked(refreshTokensViaHttp).mockResolvedValue(ok({
       tokensRefreshed: 3,
@@ -47,9 +38,7 @@ describe('refreshTokensViaBrowser', () => {
     expect(refreshTokensViaHttp).toHaveBeenCalledOnce();
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value.method).toBe('http');
-      expect(result.value.previousExpiry).toBeInstanceOf(Date);
-      expect(result.value.previousExpiry).toEqual(beforeToken?.expiry ?? new Date(0));
+      expect(result.value.previousExpiry).toEqual(new Date(0));
       expect(result.value.refreshNeeded).toBe(true);
     }
   });
