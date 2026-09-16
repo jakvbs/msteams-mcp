@@ -265,26 +265,43 @@ const TEAMS_ORIGINS = [
 ];
 
 /**
- * Returns true if localStorage has a SubstrateSearch MSAL token entry.
+ * Classifies the best SubstrateSearch MSAL token in localStorage.
+ * Expired tokens remain useful because their MSAL metadata can drive refresh.
  */
-function hasSubstrateSearchToken(
+function getSubstrateSearchTokenState(
   localStorage: SessionState['origins'][number]['localStorage'] | undefined
-): boolean {
+): 'fresh' | 'expired' | null {
+  let hasExpiredToken = false;
+
   for (const item of localStorage ?? []) {
     try {
-      const entry = JSON.parse(item.value) as { target?: string; secret?: string };
+      const entry: unknown = JSON.parse(item.value);
+      if (typeof entry !== 'object' || entry === null) continue;
+      if (!('target' in entry) || typeof entry.target !== 'string') continue;
+      if (!entry.target.includes('SubstrateSearch')) continue;
+      if (!('secret' in entry) || typeof entry.secret !== 'string') continue;
+
+      const payloadSegment = entry.secret.split('.')[1];
+      if (!payloadSegment) continue;
+
+      const payload: unknown = JSON.parse(Buffer.from(payloadSegment, 'base64url').toString());
       if (
-        entry.target?.includes('SubstrateSearch') &&
-        typeof entry.secret === 'string' &&
-        entry.secret.startsWith('ey')
+        typeof payload !== 'object' ||
+        payload === null ||
+        !('exp' in payload) ||
+        typeof payload.exp !== 'number'
       ) {
-        return true;
+        continue;
       }
+
+      if (payload.exp * 1000 > Date.now()) return 'fresh';
+      hasExpiredToken = true;
     } catch {
-      // ignore non-JSON localStorage values
+      // ignore non-JSON localStorage values and malformed JWTs
     }
   }
-  return false;
+
+  return hasExpiredToken ? 'expired' : null;
 }
 
 /**
@@ -299,8 +316,18 @@ function hasSubstrateSearchToken(
 export function getTeamsOrigin(state: SessionState): SessionState['origins'][number] | null {
   if (!state.origins) return null;
 
-  const withSubstrate = state.origins.find(o => hasSubstrateSearchToken(o.localStorage));
-  if (withSubstrate) return withSubstrate;
+  // Prefer fresh credentials only from exact, trusted Teams origins. If none
+  // are fresh, retain an expired token's MSAL metadata for HTTP refresh.
+  let expiredOrigin: SessionState['origins'][number] | null = null;
+  for (const knownOrigin of TEAMS_ORIGINS) {
+    const origin = state.origins.find(o => o.origin === knownOrigin);
+    if (!origin) continue;
+
+    const tokenState = getSubstrateSearchTokenState(origin.localStorage);
+    if (tokenState === 'fresh') return origin;
+    if (tokenState === 'expired' && !expiredOrigin) expiredOrigin = origin;
+  }
+  if (expiredOrigin) return expiredOrigin;
 
   // Try known Teams origins in priority order
   for (const knownOrigin of TEAMS_ORIGINS) {

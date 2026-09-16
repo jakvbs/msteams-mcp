@@ -13,14 +13,13 @@ import { extractSubstrateToken } from '../auth/token-extractor.js';
 import * as logger from '../utils/logger.js';
 
 /**
- * Default Teams URL for initial login.
- * 
- * For commercial tenants, this is teams.microsoft.com.
- * For GCC/GCC-High/DoD tenants, Microsoft's login flow will redirect users
- * to the appropriate URL (teams.microsoft.us, etc.) after authentication.
- * We then extract the correct base URL from DISCOVER-REGION-GTM for all API calls.
+ * Canonical Teams URL for initial login.
+ *
+ * Commercial tenants use the current New Teams host. GCC/GCC-High/DoD
+ * tenants redirect to their appropriate government domain after authentication.
+ * The resulting tenant-specific base URL is still read from DISCOVER-REGION-GTM.
  */
-const TEAMS_URL = 'https://teams.microsoft.com';
+const TEAMS_URL = 'https://teams.cloud.microsoft';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Progress Overlay UI
@@ -226,8 +225,8 @@ export async function getAuthStatus(page: Page): Promise<AuthStatus> {
     };
   }
 
-  // If on Teams domain, check for authenticated content
-  if (currentUrl.includes('teams.microsoft.com')) {
+  // If on a known Teams domain, check for authenticated content
+  if (isTeamsUrl(currentUrl)) {
     const hasContent = await hasAuthenticatedContent(page);
     return {
       isAuthenticated: hasContent,

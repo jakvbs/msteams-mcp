@@ -32,7 +32,7 @@ import * as log from '../utils/logger.js';
 export interface TokenRefreshResult {
   /** New token expiry time. */
   newExpiry: Date;
-  /** Previous expiry time (for comparison). */
+  /** Previous expiry time, or the Unix epoch when no valid prior token existed. */
   previousExpiry: Date;
   /** Minutes gained by refresh. */
   minutesGained: number;
@@ -62,19 +62,16 @@ export async function refreshTokensViaBrowser(): Promise<Result<TokenRefreshResu
     ));
   }
 
-  // Get current token expiry for comparison
+  // Keep the current token expiry for comparison when one is available.
+  // HTTP refresh only requires an MSAL refresh token, so a missing or expired
+  // access token must not prevent recovery.
   const beforeToken = extractSubstrateToken();
-  if (!beforeToken) {
-    log.warn('token-refresh', 'No Substrate token found in session - cannot refresh, browser login required');
-    return err(createError(
-      ErrorCode.AUTH_REQUIRED,
-      'ACTION REQUIRED: No token found in session. You MUST call teams_login to authenticate.',
-    ));
+  const previousExpiry = beforeToken?.expiry;
+  if (previousExpiry) {
+    log.debug('token-refresh', `Current token expires at ${previousExpiry.toISOString()} (${Math.round((previousExpiry.getTime() - Date.now()) / 60000)} mins remaining)`);
+  } else {
+    log.debug('token-refresh', 'No valid Substrate token found; attempting HTTP refresh');
   }
-
-  log.debug('token-refresh', `Current token expires at ${beforeToken.expiry.toISOString()} (${Math.round((beforeToken.expiry.getTime() - Date.now()) / 60000)} mins remaining)`);
-
-  const previousExpiry = beforeToken.expiry;
   refreshInProgress = true;
 
   try {
@@ -89,14 +86,15 @@ export async function refreshTokensViaBrowser(): Promise<Result<TokenRefreshResu
       // Verify we now have a valid Substrate token
       const afterToken = extractSubstrateToken();
       if (afterToken && afterToken.expiry.getTime() > Date.now()) {
-        const minutesGained = Math.round(
-          (afterToken.expiry.getTime() - previousExpiry.getTime()) / 1000 / 60
-        );
-        const wasCloseToExpiry = previousExpiry.getTime() - Date.now() < TOKEN_REFRESH_THRESHOLD_MS;
+        const minutesGained = previousExpiry
+          ? Math.round((afterToken.expiry.getTime() - previousExpiry.getTime()) / 1000 / 60)
+          : 0;
+        const wasCloseToExpiry = !previousExpiry ||
+          previousExpiry.getTime() - Date.now() < TOKEN_REFRESH_THRESHOLD_MS;
 
         return ok({
           newExpiry: afterToken.expiry,
-          previousExpiry,
+          previousExpiry: previousExpiry ?? new Date(0),
           minutesGained,
           refreshNeeded: wasCloseToExpiry,
           method: 'http',
@@ -130,7 +128,7 @@ export async function refreshTokensViaBrowser(): Promise<Result<TokenRefreshResu
  * silently refresh tokens using session cookies.
  */
 async function refreshTokensViaBrowserImpl(
-  previousExpiry: Date,
+  previousExpiry?: Date,
 ): Promise<Result<TokenRefreshResult>> {
   // Import browser functions dynamically to avoid circular dependencies
   const { createBrowserContext, closeBrowser } = await import('../browser/context.js');
@@ -169,15 +167,16 @@ async function refreshTokensViaBrowserImpl(
     }
 
     const newExpiry = afterToken.expiry;
-    const minutesGained = Math.round(
-      (newExpiry.getTime() - previousExpiry.getTime()) / 1000 / 60
-    );
+    const minutesGained = previousExpiry
+      ? Math.round((newExpiry.getTime() - previousExpiry.getTime()) / 1000 / 60)
+      : 0;
 
-    // Check if the token was close to expiry and needed refresh
-    const wasCloseToExpiry = previousExpiry.getTime() - Date.now() < TOKEN_REFRESH_THRESHOLD_MS;
+    // Missing tokens always need refresh; otherwise use the normal threshold.
+    const wasCloseToExpiry = !previousExpiry ||
+      previousExpiry.getTime() - Date.now() < TOKEN_REFRESH_THRESHOLD_MS;
 
-    // If we needed a refresh but didn't get one, that's an error
-    if (wasCloseToExpiry && newExpiry.getTime() <= previousExpiry.getTime()) {
+    // If we had a previous token that needed refresh, require a newer one.
+    if (previousExpiry && wasCloseToExpiry && newExpiry.getTime() <= previousExpiry.getTime()) {
       return err(createError(
         ErrorCode.AUTH_EXPIRED,
         'ACTION REQUIRED: Token was not refreshed despite being close to expiry. You MUST call teams_login to re-authenticate.',
@@ -186,7 +185,7 @@ async function refreshTokensViaBrowserImpl(
 
     return ok({
       newExpiry,
-      previousExpiry,
+      previousExpiry: previousExpiry ?? new Date(0),
       minutesGained,
       refreshNeeded: wasCloseToExpiry,
       method: 'browser',
