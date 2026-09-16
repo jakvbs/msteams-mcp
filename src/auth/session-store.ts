@@ -305,6 +305,30 @@ function getSubstrateSearchTokenState(
 }
 
 /**
+ * Selects a trusted Teams origin with a fresh SubstrateSearch token.
+ */
+export function selectLiveTeamsOrigin(state: SessionState): string | null {
+  for (const knownOrigin of TEAMS_ORIGINS) {
+    const origin = state.origins.find(candidate => candidate.origin === knownOrigin);
+    if (getSubstrateSearchTokenState(origin?.localStorage) === 'fresh') return knownOrigin;
+  }
+
+  return null;
+}
+
+/**
+ * Gets a trusted, live Teams origin from the persisted session.
+ */
+export function getLiveTeamsOrigin(): string | null {
+  try {
+    const state = readSessionState();
+    return state ? selectLiveTeamsOrigin(state) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Gets the Teams origin from session state.
  * Checks multiple known Teams domains to support government clouds.
  *

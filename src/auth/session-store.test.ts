@@ -4,7 +4,11 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { getTeamsOrigin, type SessionState } from './session-store.js';
+import {
+  getTeamsOrigin,
+  selectLiveTeamsOrigin,
+  type SessionState,
+} from './session-store.js';
 
 function makeOrigin(
   origin: string,
@@ -107,5 +111,23 @@ describe('getTeamsOrigin', () => {
     };
 
     expect(getTeamsOrigin(state)).toBeNull();
+  });
+
+  it('selects only a trusted origin with a fresh token for live navigation', () => {
+    const expired = Math.floor(Date.now() / 1000) - 3600;
+    const state: SessionState = {
+      cookies: [],
+      origins: [
+        makeOrigin('https://untrusted.example', [makeSubstrateEntry()]),
+        makeOrigin('https://teams.cloud.microsoft', [makeSubstrateEntry(expired)]),
+        makeOrigin('https://teams.microsoft.com', [makeSubstrateEntry()]),
+      ],
+    };
+
+    expect(selectLiveTeamsOrigin(state)).toBe('https://teams.microsoft.com');
+    expect(selectLiveTeamsOrigin({
+      cookies: [],
+      origins: [makeOrigin('https://teams.cloud.microsoft', [makeSubstrateEntry(expired)])],
+    })).toBeNull();
   });
 });

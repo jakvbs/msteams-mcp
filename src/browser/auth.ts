@@ -10,14 +10,16 @@ import {
   OVERLAY_COMPLETE_PAUSE_MS,
 } from '../constants.js';
 import { extractSubstrateToken } from '../auth/token-extractor.js';
+import { getLiveTeamsOrigin } from '../auth/session-store.js';
 import * as logger from '../utils/logger.js';
 
 /**
- * Canonical Teams URL for initial login.
+ * Bootstrap fallback Teams URL for cold-start login.
  *
- * Commercial tenants use the current New Teams host. GCC/GCC-High/DoD
- * tenants redirect to their appropriate government domain after authentication.
- * The resulting tenant-specific base URL is still read from DISCOVER-REGION-GTM.
+ * Commercial tenants use the current New Teams host. Persisted sessions
+ * navigate to their trusted origin when it still has fresh credentials.
+ * GCC/GCC-High/DoD tenants redirect to their appropriate government domain
+ * after authentication.
  */
 const TEAMS_URL = 'https://teams.cloud.microsoft';
 
@@ -286,8 +288,10 @@ export async function navigateToTeams(page: Page): Promise<AuthStatus> {
   page.on('framenavigated', handleFrameNavigated);
 
   try {
-    // Navigate to Teams
-    await page.goto(TEAMS_URL, { waitUntil: 'domcontentloaded' });
+    // Prefer the trusted session origin; use the bootstrap URL on cold start.
+    const target = getLiveTeamsOrigin() ?? TEAMS_URL;
+    logger.debug('auth', `Navigating to Teams origin: ${target}`);
+    await page.goto(target, { waitUntil: 'domcontentloaded' });
 
     // Wait for either:
     // 1. A redirect to login page (detected via framenavigated)
