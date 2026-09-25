@@ -80,7 +80,7 @@ src/
 - **Shared constants**: Magic numbers (page sizes, timeouts, thresholds) live in `constants.ts`.
 - **MCP resources**: Passive resources (`teams://me/profile`, `teams://me/favorites`, `teams://status`) provide context discovery without tool calls.
 - **Markdown to Teams HTML**: `markdownToTeamsHtml()` in `utils/parsers.ts` converts markdown (bold, italic, code, code blocks, strikethrough, lists, newlines) to the `RichText/Html` Teams expects. Used by `sendMessage()` and `editMessage()`. When messages contain @mentions or links, `parseContentWithMentionsAndLinks()` applies the same conversion to text between inline elements.
-- **Auto-login on auth failure**: The `CallToolRequestSchema` handler in `server.ts` retries tool calls that fail with `AUTH_REQUIRED`/`AUTH_EXPIRED`, first attempting headless re-auth (token refresh, then full headless login). Auth tools (`teams_login`, `teams_status`) are excluded to avoid loops. Concurrent failures are deduplicated via a Promise-based mutex so only one auto-login runs at a time.
+- **Auto-login on auth failure**: The `CallToolRequestSchema` handler in `server.ts` retries tool calls that fail with `AUTH_REQUIRED`/`AUTH_EXPIRED`. The guard and server retry share one request-scoped recovery result from `auth/token-refresh.ts` (HTTP refresh, then headless browser login); a failed browser flow is logged, not repeated. Auth tools (`teams_login`, `teams_status`) are excluded to avoid loops. Concurrent auto-login calls remain deduplicated. The CLI gives automatic recovery the same timeout budget as explicit login; other MCP clients control their own request deadlines.
 
 ### Dynamic Configuration from Session
 

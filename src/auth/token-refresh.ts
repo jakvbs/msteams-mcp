@@ -18,6 +18,7 @@
  * First login always requires a browser — there's no refresh token to use yet.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { TOKEN_REFRESH_THRESHOLD_MS } from '../constants.js';
 import { ErrorCode, createError } from '../types/errors.js';
 import { type Result, ok, err } from '../types/result.js';
@@ -45,6 +46,16 @@ export interface TokenRefreshResult {
 /** Module-level flag to prevent concurrent refresh attempts. */
 let refreshInProgress = false;
 
+// A tool guard and the server's auth retry share one recovery result, including
+// failure. A later MCP request gets a fresh scope and may try again.
+const requestRefresh = new AsyncLocalStorage<{
+  result?: Promise<Result<TokenRefreshResult>>;
+}>();
+
+export function withTokenRefreshScope<T>(run: () => Promise<T>): Promise<T> {
+  return requestRefresh.run({}, run);
+}
+
 /**
  * Refreshes tokens using HTTP-first strategy with browser fallback.
  * 
@@ -52,7 +63,17 @@ let refreshInProgress = false;
  * 2. If HTTP fails, fall back to headless browser refresh (~8s)
  * 3. If both fail, return error directing to teams_login
  */
-export async function refreshTokensViaBrowser(): Promise<Result<TokenRefreshResult>> {
+export function refreshTokensViaBrowser(): Promise<Result<TokenRefreshResult>> {
+  const scope = requestRefresh.getStore();
+  if (scope?.result) return scope.result;
+  // A different request holding the browser is not a recovery attempt by this
+  // request; do not cache that transient "in progress" rejection.
+  if (!scope || refreshInProgress) return refreshTokens();
+  scope.result = refreshTokens();
+  return scope.result;
+}
+
+async function refreshTokens(): Promise<Result<TokenRefreshResult>> {
   // Prevent concurrent refresh attempts
   if (refreshInProgress) {
     return err(createError(
@@ -115,7 +136,11 @@ export async function refreshTokensViaBrowser(): Promise<Result<TokenRefreshResu
     }
 
     // ── Strategy 2: Browser refresh (fallback) ──────────────────────────
-    return await refreshTokensViaBrowserImpl(previousExpiry);
+    const browserResult = await refreshTokensViaBrowserImpl(previousExpiry);
+    if (!browserResult.ok) {
+      log.warn('token-refresh', browserResult.error.message);
+    }
+    return browserResult;
 
   } finally {
     refreshInProgress = false;

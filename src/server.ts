@@ -29,9 +29,8 @@ import {
   extractMessageAuth,
   extractCsaToken,
   getUserProfile,
-  clearTokenCache,
 } from './auth/token-extractor.js';
-import { refreshTokensViaBrowser } from './auth/token-refresh.js';
+import { refreshTokensViaBrowser, withTokenRefreshScope } from './auth/token-refresh.js';
 
 // API modules
 import { getFavorites } from './api/csa-api.js';
@@ -221,48 +220,12 @@ export class TeamsServer implements ITeamsServer {
   }
 
   private async _attemptAutoLoginImpl(): Promise<boolean> {
-    try {
-      // First try the lightweight token refresh (headless browser, persistent profile)
-      const refreshResult = await refreshTokensViaBrowser();
-      if (refreshResult.ok) {
-        this.markInitialised();
-        return true;
-      }
-
-      // Token refresh failed — try a full headless login
-      // (covers cases where session cookies are still valid but token cache is stale)
-      log.warn('auto-login', 'Token refresh failed, trying full headless login...');
-      clearTokenCache();
-
-      const headlessManager = await createBrowserContext({ headless: true });
-      try {
-        await ensureAuthenticated(
-          headlessManager.page,
-          headlessManager.context,
-          (msg) => log.info('auto-login:headless', msg),
-          false, // No overlay in headless
-          true   // Headless mode — throw if user interaction required
-        );
-
-        await closeBrowser(headlessManager, true);
-        this.resetBrowserState();
-        this.markInitialised();
-        return true;
-      } catch (error) {
-        // Headless login also failed — user interaction required
-        log.error('auto-login:headless', `Headless login failed: ${error instanceof Error ? error.message : String(error)}`);
-        try {
-          await closeBrowser(headlessManager, false);
-        } catch {
-          // Ignore cleanup errors
-        }
-        this.resetBrowserState();
-        return false;
-      }
-    } catch (error) {
-      log.error('auto-login', `Auto-login failed: ${error instanceof Error ? error.message : String(error)}`);
-      return false;
-    }
+    // The refresh orchestrator already runs ensureAuthenticated in a headless
+    // browser. Reopening it here repeats the same failed login flow.
+    const refreshResult = await refreshTokensViaBrowser();
+    if (!refreshResult.ok) return false;
+    this.markInitialised();
+    return true;
   }
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -392,7 +355,7 @@ export class TeamsServer implements ITeamsServer {
     });
 
     // Handle tool calls (with auto-login retry for auth errors)
-    server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    server.setRequestHandler(CallToolRequestSchema, async (request) => withTokenRefreshScope(async () => {
       const { name, arguments: args } = request.params;
 
       try {
@@ -442,7 +405,7 @@ export class TeamsServer implements ITeamsServer {
           { retryable: false }
         ));
       }
-    });
+    }));
 
     // Cleanup on server close
     server.onclose = async () => {

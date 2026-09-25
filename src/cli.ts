@@ -20,6 +20,8 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { pathToFileURL } from 'node:url';
+import { realpathSync } from 'node:fs';
 import { createServer } from './server.js';
 
 // Shortcuts map command names to tool names and parameter mappings
@@ -250,7 +252,7 @@ async function listTools(client: Client, json: boolean): Promise<void> {
   log('Use --key value for parameters, e.g.: teams_find_channel --query "name"');
 }
 
-async function callTool(
+export async function callTool(
   client: Client,
   toolName: string,
   args: Record<string, unknown>,
@@ -277,8 +279,8 @@ async function callTool(
     }
   }
 
-  // Login tool needs a longer timeout for MFA flows
-  const timeout = toolName === 'teams_login' ? 5 * 60 * 1000 : undefined; // 5 minutes for login
+  // Any tool can enter automatic login; it needs the same budget as explicit login.
+  const timeout = 5 * 60 * 1000;
   const result = await client.callTool({ name: toolName, arguments: args }, undefined, { timeout });
 
   if (json) {
@@ -515,7 +517,7 @@ async function main(): Promise<void> {
       console.error('\nStack trace:');
       console.error(error.stack);
     }
-    process.exit(1);
+    process.exitCode = 1;
   } finally {
     if (cleanup) {
       await cleanup();
@@ -523,4 +525,6 @@ async function main(): Promise<void> {
   }
 }
 
-main();
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+  void main();
+}
