@@ -3,7 +3,6 @@ import { mkdtemp, rm, symlink } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { promisify } from 'node:util';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -11,7 +10,10 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { expect, it, vi } from 'vitest';
 import { callTool } from './cli.js';
 
-it.each(['direct', 'symlink'])('reports one failed browser recovery through the real CLI (%s)', async (entry) => {
+it.each([
+  { entry: 'direct', json: true },
+  { entry: 'symlink', json: false },
+])('reports failed recovery through the real CLI ($entry, json=$json)', async ({ entry, json }) => {
   const home = await mkdtemp(join(tmpdir(), 'teams-auth-proof-'));
   const cli = join(process.cwd(), 'src/cli.ts');
   const linkedCli = join(home, 'msteams');
@@ -26,14 +28,20 @@ it.each(['direct', 'symlink'])('reports one failed browser recovery through the 
   try {
     const address = endpoint.address();
     if (!address || typeof address === 'string') throw new Error('Missing test endpoint');
-    const { stdout, stderr } = await promisify(execFile)(process.execPath,
-      ['--import', 'tsx', entry === 'symlink' ? linkedCli : cli, 'teams_get_out_of_office', '--json'], {
-        env: { ...process.env, HOME: home, USERPROFILE: home, APPDATA: home, LOG_LEVEL: 'warn',
-          TEAMS_MCP_CDP_URL: `http://127.0.0.1:${address.port}` },
-        timeout: 20_000,
-      });
-    expect(JSON.parse(stdout)).toMatchObject({ isError: true });
-    expect(stdout).toContain('AUTH_REQUIRED');
+    const { stdout, stderr, code } = await new Promise<{ stdout: string; stderr: string; code: string | number }>(resolve => {
+      execFile(process.execPath,
+        ['--import', 'tsx', entry === 'symlink' ? linkedCli : cli, 'teams_get_out_of_office', ...(json ? ['--json'] : [])], {
+          env: { ...process.env, HOME: home, USERPROFILE: home, APPDATA: home, LOG_LEVEL: 'warn',
+            TEAMS_MCP_CDP_URL: `http://127.0.0.1:${address.port}` },
+          timeout: 20_000,
+        }, (error, stdout, stderr) => resolve({ stdout, stderr, code: error?.code ?? 0 }));
+    });
+    expect.soft(code).toBe(1);
+    if (json) expect(JSON.parse(stdout)).toMatchObject({ isError: true });
+    expect.soft(stdout).toContain('BROWSER_ERROR');
+    expect.soft(stdout).toContain('503');
+    expect.soft(stdout).not.toContain('Done.');
+    expect.soft(stdout).not.toContain('Complete');
     expect.soft(discoveryRequests).toBe(1);
     expect.soft(stderr).toContain('Token refresh via browser failed:');
     expect(stderr).toContain('503');

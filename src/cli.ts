@@ -257,7 +257,7 @@ export async function callTool(
   toolName: string,
   args: Record<string, unknown>,
   json: boolean
-): Promise<void> {
+): Promise<boolean> {
   // Verify the tool exists
   const tools = await client.listTools();
   const tool = tools.tools.find(t => t.name === toolName);
@@ -285,7 +285,7 @@ export async function callTool(
 
   if (json) {
     console.log(JSON.stringify(result, null, 2));
-    return;
+    return result.isError !== true;
   }
 
   // Pretty-print the result
@@ -303,6 +303,7 @@ export async function callTool(
   } else {
     log('(No text content in response)');
   }
+  return result.isError !== true;
 }
 
 /**
@@ -312,8 +313,15 @@ function prettyPrintResponse(response: Record<string, unknown>, _toolName: strin
   // Check for error
   if (response.success === false) {
     log(`❌ Failed: ${response.error || 'Unknown error'}`);
-    if (response.code) log(`   Code: ${response.code}`);
-    if (response.suggestion) log(`   Suggestion: ${response.suggestion}`);
+    const code = response.errorCode ?? response.code;
+    if (code) log(`   Code: ${code}`);
+    if (Array.isArray(response.suggestions)) {
+      for (const suggestion of response.suggestions) {
+        if (typeof suggestion === 'string') log(`   ${suggestion}`);
+      }
+    } else if (response.suggestion) {
+      log(`   Suggestion: ${response.suggestion}`);
+    }
     return;
   }
 
@@ -503,7 +511,11 @@ async function main(): Promise<void> {
     if (parsed.command === 'list' || !parsed.toolName) {
       await listTools(client, parsed.json);
     } else {
-      await callTool(client, parsed.toolName, parsed.args, parsed.json);
+      const success = await callTool(client, parsed.toolName, parsed.args, parsed.json);
+      if (!success) {
+        process.exitCode = 1;
+        return;
+      }
     }
     
     if (!parsed.json) {

@@ -29,6 +29,9 @@ export enum ErrorCode {
   UNKNOWN = 'UNKNOWN',
 }
 
+/** The browser reached a sign-in page and requires user interaction. */
+export class AuthenticationRequiredError extends Error {}
+
 /** Structured error with machine-readable information. */
 export interface McpError {
   /** Machine-readable error code. */
@@ -72,15 +75,10 @@ export function createError(
 function getDefaultSuggestions(code: ErrorCode): string[] {
   switch (code) {
     case ErrorCode.AUTH_REQUIRED:
-      return [
-        'IMMEDIATELY call teams_login with { "forceNew": true } to authenticate',
-        'Do NOT skip this step or tell the user Teams is unavailable',
-        'After login succeeds, retry the original request',
-      ];
     case ErrorCode.AUTH_EXPIRED:
       return [
-        'IMMEDIATELY call teams_login with { "forceNew": true } to refresh authentication',
-        'Do NOT skip this step or tell the user Teams is unavailable',
+        'Run msteams login --force true and complete sign-in in the browser',
+        'MCP clients: call teams_login with { "forceNew": true }',
         'After login succeeds, retry the original request',
       ];
     case ErrorCode.RATE_LIMITED:
@@ -92,7 +90,11 @@ function getDefaultSuggestions(code: ErrorCode): string[] {
     case ErrorCode.API_ERROR:
       return ['Retry the request', 'Check teams_status for system health'];
     case ErrorCode.BROWSER_ERROR:
-      return ['Call teams_login to restart browser session'];
+      return [
+        'Check that the browser is running and its CDP endpoint is reachable',
+        'Run msteams login --force true and keep the sign-in tab open until login completes',
+        'MCP clients: call teams_login with { "forceNew": true }',
+      ];
     case ErrorCode.NETWORK_ERROR:
       return ['Check network connectivity', 'Retry the request'];
     case ErrorCode.TIMEOUT:

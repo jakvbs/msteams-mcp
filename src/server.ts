@@ -30,7 +30,7 @@ import {
   extractCsaToken,
   getUserProfile,
 } from './auth/token-extractor.js';
-import { refreshTokensViaBrowser, withTokenRefreshScope } from './auth/token-refresh.js';
+import { refreshTokensViaBrowser, withTokenRefreshScope, type TokenRefreshResult } from './auth/token-refresh.js';
 
 // API modules
 import { getFavorites } from './api/csa-api.js';
@@ -43,6 +43,7 @@ import type { ToolContext } from './tools/index.js';
 import { ErrorCode, createError, type McpError } from './types/errors.js';
 import * as log from './utils/logger.js';
 import type { TeamsServer as ITeamsServer } from './types/server.js';
+import type { Result } from './types/result.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MCP Server Class
@@ -200,14 +201,14 @@ export class TeamsServer implements ITeamsServer {
   }
 
   /** Deduplicates concurrent auto-login attempts. */
-  private autoLoginInProgress: Promise<boolean> | null = null;
+  private autoLoginInProgress: Promise<Result<TokenRefreshResult>> | null = null;
 
   /**
    * Attempts automatic re-authentication via headless browser.
-   * Returns true if login succeeded and tokens are now available.
+   * Preserves the recovery result so callers can distinguish login from browser failure.
    * Concurrent calls are deduplicated — only one login runs at a time.
    */
-  private async attemptAutoLogin(): Promise<boolean> {
+  private async attemptAutoLogin(): Promise<Result<TokenRefreshResult>> {
     if (this.autoLoginInProgress) {
       return this.autoLoginInProgress;
     }
@@ -219,13 +220,12 @@ export class TeamsServer implements ITeamsServer {
     }
   }
 
-  private async _attemptAutoLoginImpl(): Promise<boolean> {
+  private async _attemptAutoLoginImpl(): Promise<Result<TokenRefreshResult>> {
     // The refresh orchestrator already runs ensureAuthenticated in a headless
     // browser. Reopening it here repeats the same failed login flow.
     const refreshResult = await refreshTokensViaBrowser();
-    if (!refreshResult.ok) return false;
-    this.markInitialised();
-    return true;
+    if (refreshResult.ok) this.markInitialised();
+    return refreshResult;
   }
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -369,9 +369,9 @@ export class TeamsServer implements ITeamsServer {
         // Auto-login retry for auth errors (skip for login/status tools themselves)
         if (this.isAuthError(result.error) && !this.isAuthTool(name)) {
           log.warn('auto-login', `Tool '${name}' returned ${result.error.code}, attempting automatic re-authentication...`);
-          const loginSuccess = await this.attemptAutoLogin();
+          const loginResult = await this.attemptAutoLogin();
 
-          if (loginSuccess) {
+          if (loginResult.ok) {
             log.info('auto-login', 'Re-authentication succeeded, retrying tool...');
             const retryResult = await invokeTool(name, args, ctx);
             if (retryResult.success) {
@@ -382,17 +382,8 @@ export class TeamsServer implements ITeamsServer {
             return this.formatError(retryResult.error);
           }
 
-          // Auto-login failed — return a strongly-worded error directing to forceNew
           log.error('auto-login', 'Automatic re-authentication failed.');
-          return this.formatError(createError(
-            ErrorCode.AUTH_REQUIRED,
-            'ACTION REQUIRED: Teams session has expired and automatic re-authentication failed. You MUST call teams_login with forceNew: true to clear stale state and re-authenticate. Do NOT call teams_login without forceNew — it will return early without fixing the problem.',
-            { suggestions: [
-              'IMMEDIATELY call teams_login with { "forceNew": true }',
-              'After login succeeds, retry the original request',
-              'Do NOT skip this step or tell the user Teams is unavailable — authentication just needs refreshing',
-            ] }
-          ));
+          return this.formatError(loginResult.error);
         }
 
         return this.formatError(result.error);

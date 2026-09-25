@@ -34,6 +34,9 @@ jobs:
       - name: Run type checking
         run: npm run typecheck
 
+      - name: Install browser for authentication regression tests
+        run: npx playwright install --with-deps chromium
+
       - name: Run tests
         run: npm test
 

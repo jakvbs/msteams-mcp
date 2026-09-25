@@ -81,6 +81,7 @@ src/
 - **MCP resources**: Passive resources (`teams://me/profile`, `teams://me/favorites`, `teams://status`) provide context discovery without tool calls.
 - **Markdown to Teams HTML**: `markdownToTeamsHtml()` in `utils/parsers.ts` converts markdown (bold, italic, code, code blocks, strikethrough, lists, newlines) to the `RichText/Html` Teams expects. Used by `sendMessage()` and `editMessage()`. When messages contain @mentions or links, `parseContentWithMentionsAndLinks()` applies the same conversion to text between inline elements.
 - **Auto-login on auth failure**: The `CallToolRequestSchema` handler in `server.ts` retries tool calls that fail with `AUTH_REQUIRED`/`AUTH_EXPIRED`. The guard and server retry share one request-scoped recovery result from `auth/token-refresh.ts` (HTTP refresh, then headless browser login); a failed browser flow is logged, not repeated. Auth tools (`teams_login`, `teams_status`) are excluded to avoid loops. Concurrent auto-login calls remain deduplicated. The CLI gives automatic recovery the same timeout budget as explicit login; other MCP clients control their own request deadlines.
+- **Authentication errors**: A detected sign-in page returns `AUTH_REQUIRED`; a closed tab or failed browser connection returns `BROWSER_ERROR`. The server preserves the recovery error. The CLI prints its code and recovery suggestions, exits nonzero on MCP tool errors, and only prints completion after success.
 
 ### Dynamic Configuration from Session
 
@@ -160,8 +161,8 @@ npm run dev           # Run MCP server in development mode
 npm run build         # Compile TypeScript
 npm run lint          # Run ESLint (lint:fix to auto-fix)
 npm start             # Run compiled MCP server
-npm test              # Run unit tests
-npm run test:watch    # Unit tests in watch mode
+npm test              # Run unit and integration tests
+npm run test:watch    # Tests in watch mode
 npm run test:coverage # Coverage report
 npm run typecheck     # Type checking only
 ```
@@ -187,6 +188,8 @@ npm run cli -- search "your query" --from 25 --size 25  # Pagination
 ### Unit tests
 
 Vitest, focused on pure functions and outcomes over implementation. Fixtures (`src/__fixtures__/api-responses.ts`) mirror real API shapes. Tested functions live in `src/utils/parsers.ts` and cover HTML stripping/entity decoding, deep-link generation, timestamp extraction, search/people/email result parsing, JWT profile extraction, token-status calculation, base64 GUID decoding, and user-ID extraction across formats.
+
+Authentication browser regressions in `src/browser/auth.browser.test.ts` run through the real CLI and isolated Chromium over CDP. Install their runtime with `npx playwright install --with-deps chromium` before `npm test`; CI installs the version selected by the lockfile. The fixtures intercept all page requests and do not access a live Microsoft account.
 
 ### Extending
 

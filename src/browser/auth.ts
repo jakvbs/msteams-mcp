@@ -12,6 +12,7 @@ import {
 import { extractSubstrateToken } from '../auth/token-extractor.js';
 import { getLiveTeamsOrigin } from '../auth/session-store.js';
 import * as logger from '../utils/logger.js';
+import { AuthenticationRequiredError } from '../types/errors.js';
 
 /**
  * Bootstrap fallback Teams URL for cold-start login.
@@ -561,10 +562,10 @@ export async function ensureAuthenticated(
 
   // User interaction required - fail fast if headless
   if (headless) {
-    const reason = status.isOnLoginPage 
-      ? 'Login page detected - user credentials required'
-      : `Unexpected page state: ${status.currentUrl}`;
-    throw new Error(`Headless SSO failed: ${reason}`);
+    if (status.isOnLoginPage) {
+      throw new AuthenticationRequiredError('Teams sign-in is required. Your browser session is signed out.');
+    }
+    throw new Error(`Headless SSO failed: Unexpected page state: ${status.currentUrl}`);
   }
 
   if (status.isOnLoginPage) {

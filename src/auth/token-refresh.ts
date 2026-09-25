@@ -20,7 +20,7 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { TOKEN_REFRESH_THRESHOLD_MS } from '../constants.js';
-import { ErrorCode, createError } from '../types/errors.js';
+import { AuthenticationRequiredError, ErrorCode, createError } from '../types/errors.js';
 import { type Result, ok, err } from '../types/result.js';
 import {
   extractSubstrateToken,
@@ -217,6 +217,7 @@ async function refreshTokensViaBrowserImpl(
     });
 
   } catch (error) {
+    const pageClosed = manager?.page.isClosed() ?? false;
     // Clean up browser if still open
     if (manager) {
       try {
@@ -227,9 +228,14 @@ async function refreshTokensViaBrowserImpl(
     }
 
     const message = error instanceof Error ? error.message : 'Unknown error';
+    if (error instanceof AuthenticationRequiredError) {
+      return err(createError(ErrorCode.AUTH_REQUIRED, error.message));
+    }
     return err(createError(
-      ErrorCode.UNKNOWN,
-      `Token refresh via browser failed: ${message}. Call teams_login to re-authenticate.`,
+      ErrorCode.BROWSER_ERROR,
+      pageClosed
+        ? 'Browser sign-in was interrupted: the tab or browser was closed.'
+        : `Token refresh via browser failed: ${message}`,
     ));
   }
 }
