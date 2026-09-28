@@ -477,6 +477,7 @@ async function waitForTokenRefresh(
   page: Page,
   context: BrowserContext,
   onProgress?: (message: string) => void,
+  failOnLoginRedirect: boolean = false,
 ): Promise<boolean> {
   const log = onProgress ?? ((msg: string) => logger.debug('auth', msg));
   
@@ -484,6 +485,10 @@ async function waitForTokenRefresh(
   const startTime = Date.now();
   
   while (Date.now() - startTime < TOKEN_REFRESH_WAIT_TIMEOUT_MS) {
+    // Sign-in can redirect after the initial navigation grace period.
+    if (failOnLoginRedirect && isLoginUrl(page.url())) {
+      throw new AuthenticationRequiredError('Teams sign-in is required. The session could not be renewed silently.');
+    }
     // Check localStorage directly in the browser (no disk I/O)
     const minsRemaining = await checkBrowserTokenExpiry(page);
     
@@ -544,14 +549,16 @@ export async function ensureAuthenticated(
     // Teams JS will silently acquire new tokens using the session cookies
     if (headless) {
       log('Tokens expired, waiting for MSAL to refresh...');
-      const refreshed = await waitForTokenRefresh(page, context, onProgress);
+      const refreshed = await waitForTokenRefresh(page, context, onProgress, true);
       
       if (refreshed) {
         return;
       }
       
       // Still no valid tokens after waiting
-      throw new Error('Headless SSO failed: MSAL token refresh timed out');
+      throw new AuthenticationRequiredError(
+        'Teams did not provide a valid authentication token within 20 seconds. Automatic sign-in could not complete; sign in again.',
+      );
     }
     
     // In visible mode, the tokens might refresh while user interacts, or they can

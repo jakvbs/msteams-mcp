@@ -20,7 +20,7 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { realpathSync } from 'node:fs';
 import { createServer } from './server.js';
 
@@ -317,7 +317,21 @@ function prettyPrintResponse(response: Record<string, unknown>, _toolName: strin
     if (code) log(`   Code: ${code}`);
     if (Array.isArray(response.suggestions)) {
       for (const suggestion of response.suggestions) {
-        if (typeof suggestion === 'string') log(`   ${suggestion}`);
+        if (typeof suggestion !== 'string') continue;
+        if (suggestion.startsWith('Run msteams login ')) {
+          // Reuse this installation and CDP endpoint, not an optional global bin.
+          const source = fileURLToPath(import.meta.url);
+          const args = source.endsWith('.ts')
+            ? ['npm', '--prefix', fileURLToPath(new URL('../', import.meta.url)), 'run', 'cli', '--', 'login', '--force', 'true']
+            : [process.execPath, source, 'login', '--force', 'true'];
+          const command = args.map(value => /^[a-zA-Z0-9_./:-]+$/.test(value)
+            ? value : `'${value.replaceAll("'", "'\\''")}'`).join(' ');
+          const cdp = process.env.TEAMS_MCP_CDP_URL;
+          const env = cdp ? `TEAMS_MCP_CDP_URL='${cdp.replaceAll("'", "'\\''")}' ` : '';
+          log(`   Sign in: ${env}${command}`);
+        } else {
+          log(`   ${suggestion}`);
+        }
       }
     } else if (response.suggestion) {
       log(`   Suggestion: ${response.suggestion}`);

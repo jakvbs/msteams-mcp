@@ -8,6 +8,10 @@ import { expect, it } from 'vitest';
 it.each([
   { scenario: 'signed-out', code: 'AUTH_REQUIRED', message: 'Teams sign-in is required' },
   { scenario: 'closed-tab', code: 'BROWSER_ERROR', message: 'tab or browser was closed' },
+  // This subprocess/CDP boundary deliberately exercises the real token deadline;
+  // a parent fake clock cannot control the separate CLI process's polling clock.
+  { scenario: 'missing-token', code: 'AUTH_REQUIRED', message: 'Teams did not provide a valid authentication token' },
+  { scenario: 'late-login', code: 'AUTH_REQUIRED', message: 'Teams sign-in is required' },
 ])('reports $scenario through the real browser and CLI', async ({ scenario, code, message }) => {
   const home = await mkdtemp(join(tmpdir(), 'teams-browser-proof-'));
   const profile = join(home, 'browser');
@@ -31,17 +35,27 @@ it.each([
       });
     }
     const result = await new Promise<{ stdout: string; stderr: string; exitCode: string | number }>(resolve => {
-      execFile(process.execPath,
+      const child = execFile(process.execPath,
         ['--import', 'tsx', 'src/cli.ts', 'teams_set_out_of_office', '--enabled', 'true'], {
-          env: { ...process.env, HOME: home, USERPROFILE: home, APPDATA: home, LOG_LEVEL: 'warn',
+          env: { ...process.env, HOME: home, USERPROFILE: home, APPDATA: home,
+            LOG_LEVEL: scenario === 'late-login' ? 'debug' : 'warn',
             TEAMS_MCP_CDP_URL: `http://127.0.0.1:${port}` },
-          timeout: 20_000,
+          timeout: 35_000,
         }, (error, stdout, stderr) => resolve({ stdout, stderr, exitCode: error?.code ?? 0 }));
+      if (scenario === 'late-login') {
+        child.stdout?.on('data', (chunk: string) => {
+          if (chunk.includes('Waiting for MSAL to refresh tokens...')) {
+            const page = context?.pages().find(candidate => candidate.url().startsWith('https://teams.cloud.microsoft'));
+            void page?.goto('https://login.microsoftonline.com/test');
+          }
+        });
+      }
     });
     expect.soft(result.exitCode).toBe(1);
     expect.soft(result.stdout).toContain(code);
     expect.soft(result.stdout).toContain(message);
-    expect.soft(result.stdout).toContain('msteams login --force true');
+    expect.soft(result.stdout).toContain('login --force true');
+    expect.soft(result.stdout).toContain(`TEAMS_MCP_CDP_URL='http://127.0.0.1:${port}'`);
     expect.soft(result.stdout).not.toContain('Done.');
     expect.soft(result.stdout).not.toContain('Complete');
     expect(context.pages()).toHaveLength(1);
@@ -52,4 +66,4 @@ it.each([
       await rm(home, { recursive: true, force: true });
     }
   }
-}, 30_000);
+}, 40_000);

@@ -29,7 +29,7 @@ export enum ErrorCode {
   UNKNOWN = 'UNKNOWN',
 }
 
-/** The browser reached a sign-in page and requires user interaction. */
+/** Browser authentication requires user interaction to obtain usable tokens. */
 export class AuthenticationRequiredError extends Error {}
 
 /** Structured error with machine-readable information. */
