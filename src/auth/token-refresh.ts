@@ -20,7 +20,7 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { TOKEN_REFRESH_THRESHOLD_MS } from '../constants.js';
-import { AuthenticationRequiredError, ErrorCode, createError } from '../types/errors.js';
+import { AuthenticationRequiredError, ErrorCode, SignInLoopError, createError } from '../types/errors.js';
 import { type Result, ok, err } from '../types/result.js';
 import {
   extractSubstrateToken,
@@ -228,6 +228,9 @@ async function refreshTokensViaBrowserImpl(
     }
 
     const message = error instanceof Error ? error.message : 'Unknown error';
+    if (error instanceof SignInLoopError) {
+      return err(error.toMcpError());
+    }
     if (error instanceof AuthenticationRequiredError) {
       return err(createError(ErrorCode.AUTH_REQUIRED, error.message));
     }

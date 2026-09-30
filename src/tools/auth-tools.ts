@@ -24,6 +24,7 @@ import {
 import { createBrowserContext, closeBrowser } from '../browser/context.js';
 import * as log from '../utils/logger.js';
 import { ensureAuthenticated, forceNewLogin, getAuthStatus } from '../browser/auth.js';
+import { SignInLoopError } from '../types/errors.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -140,14 +141,18 @@ async function handleLogin(
         },
       };
     } catch (error) {
-      // Headless attempt failed - fall through to visible browser
-      log.warn('login:headless', `Headless SSO failed, falling back to visible browser: ${error instanceof Error ? error.message : String(error)}`);
       try {
         await closeBrowser(headlessManager, false);
       } catch {
         // Ignore cleanup errors
       }
       ctx.server.resetBrowserState();
+      // A visible attempt would restart the same loop and extend Microsoft's block.
+      if (error instanceof SignInLoopError) {
+        return { success: false, error: error.toMcpError() };
+      }
+      // Headless attempt failed - fall through to visible browser
+      log.warn('login:headless', `Headless SSO failed, falling back to visible browser: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -169,6 +174,11 @@ async function handleLogin(
         (msg) => log.info('login', msg)
       );
     }
+  } catch (error) {
+    if (error instanceof SignInLoopError) {
+      return { success: false, error: error.toMcpError() };
+    }
+    throw error;
   } finally {
     // Close browser after login - we only need the saved session/tokens
     await closeBrowser(browserManager, true);

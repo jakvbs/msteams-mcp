@@ -12,7 +12,7 @@ import {
 import { extractSubstrateToken } from '../auth/token-extractor.js';
 import { getLiveTeamsOrigin } from '../auth/session-store.js';
 import * as logger from '../utils/logger.js';
-import { AuthenticationRequiredError } from '../types/errors.js';
+import { AuthenticationRequiredError, SignInLoopError } from '../types/errors.js';
 
 /**
  * Bootstrap fallback Teams URL for cold-start login.
@@ -195,6 +195,34 @@ function isLoginUrl(url: string): boolean {
   return LOGIN_URL_PATTERNS.some(pattern => url.includes(pattern));
 }
 
+/** AAD error code for a client that keeps restarting sign-in (AADSTS50196). */
+const AAD_LOOP_DETECTED = 50196;
+
+/** How long a headless check waits for the sign-in page to render its error code (ms). */
+const SIGN_IN_ERROR_WAIT_MS = 2000;
+
+/**
+ * Checks whether Microsoft sign-in reports a detected request loop.
+ * The sign-in page exposes its error code in window.$Config. While the loop runs the
+ * page reloads several times per second, so a read that races a navigation counts as unseen.
+ */
+async function isSignInLoopBlocked(page: Page): Promise<boolean> {
+  if (!isLoginUrl(page.url())) return false;
+  const code = await page.evaluate<unknown>('window.$Config?.sErrorCode ?? window.$Config?.iErrorCode')
+    .catch(() => undefined);
+  return Number(code) === AAD_LOOP_DETECTED;
+}
+
+/** Gives a freshly reached sign-in page a moment to report a loop block. */
+async function waitForSignInLoopBlock(page: Page): Promise<boolean> {
+  const deadline = Date.now() + SIGN_IN_ERROR_WAIT_MS;
+  while (!(await isSignInLoopBlocked(page))) {
+    if (Date.now() >= deadline) return false;
+    await page.waitForTimeout(250);
+  }
+  return true;
+}
+
 /**
  * Checks if the page shows authenticated Teams content.
  */
@@ -365,6 +393,11 @@ export async function waitForManualLogin(
   log('Waiting for manual login...');
 
   while (Date.now() - startTime < timeoutMs) {
+    // Waiting would keep the loop, and Microsoft's block, alive without a way to sign in.
+    if (await isSignInLoopBlocked(page)) {
+      throw new SignInLoopError();
+    }
+
     const status = await getAuthStatus(page);
 
     if (status.isAuthenticated) {
@@ -570,6 +603,9 @@ export async function ensureAuthenticated(
   // User interaction required - fail fast if headless
   if (headless) {
     if (status.isOnLoginPage) {
+      if (await waitForSignInLoopBlock(page)) {
+        throw new SignInLoopError();
+      }
       throw new AuthenticationRequiredError('Teams sign-in is required. Your browser session is signed out.');
     }
     throw new Error(`Headless SSO failed: Unexpected page state: ${status.currentUrl}`);
