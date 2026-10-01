@@ -14,6 +14,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import { createDecipheriv, hkdfSync } from 'node:crypto';
+import { z } from 'zod';
 import { encrypt, decrypt, isEncrypted } from './crypto.js';
 import { SESSION_EXPIRY_HOURS } from '../constants.js';
 import * as log from '../utils/logger.js';
@@ -186,7 +188,8 @@ export function hasSessionState(): boolean {
  */
 export function readSessionState(): SessionState | null {
   migrateIfNeeded(LEGACY_SESSION_PATH, SESSION_STATE_PATH);
-  return readSecure<SessionState>(SESSION_STATE_PATH);
+  const state = readSecure<SessionState>(SESSION_STATE_PATH);
+  return state ? decodeMsalCache(state) : null;
 }
 
 /**
@@ -263,6 +266,61 @@ const TEAMS_ORIGINS = [
   'https://teams.microsoft.us',    // GCC-High
   'https://dod.teams.microsoft.us', // DoD
 ];
+
+const MsalEncryptionCookieSchema = z.object({ id: z.string(), key: z.string() });
+const MsalEncryptedEntrySchema = z.object({
+  id: z.string(),
+  nonce: z.string(),
+  data: z.string(),
+});
+
+/**
+ * Decodes MSAL's encrypted cache in a detached session snapshot, never in the browser.
+ * Wire format: msal-browser-v5.6.3 LocalStorage.getContext and BrowserCrypto.decrypt.
+ */
+export function decodeMsalCache(state: SessionState): SessionState {
+  for (const origin of state.origins) {
+    if (!TEAMS_ORIGINS.includes(origin.origin)) continue;
+    const hostname = new URL(origin.origin).hostname;
+    const cookie = state.cookies.find(candidate =>
+      candidate.name === 'msal.cache.encryption'
+      && candidate.domain?.replace(/^\./, '') === hostname
+      && (candidate.path === '/' || candidate.path === undefined));
+    if (!cookie) continue;
+
+    try {
+      const key = MsalEncryptionCookieSchema.parse(JSON.parse(decodeURIComponent(cookie.value)));
+      const baseKey = Buffer.from(key.key, 'base64url');
+      if (baseKey.length !== 32) continue;
+      const clientIds = origin.localStorage.flatMap(entry =>
+        entry.name.match(/^msal(?:\.\d+)?\.token\.keys\.(.+)$/)?.slice(1) ?? []);
+
+      for (const entry of origin.localStorage) {
+        if (!entry.name.startsWith('msal.')) continue;
+        try {
+          const encrypted = MsalEncryptedEntrySchema.safeParse(JSON.parse(entry.value));
+          if (!encrypted.success || encrypted.data.id !== key.id) continue;
+          const nonce = Buffer.from(encrypted.data.nonce, 'base64url');
+          if (nonce.length !== 16) continue;
+          const context = clientIds.find(clientId => entry.name.includes(clientId)) ?? '';
+          const derivedKey = hkdfSync('sha256', baseKey, nonce, context, 32);
+          const data = Buffer.from(encrypted.data.data, 'base64url');
+          // MSAL derives a new key per nonce, so AES-GCM uses a zero IV.
+          const decipher = createDecipheriv('aes-256-gcm', Buffer.from(derivedKey), Buffer.alloc(12));
+          decipher.setAuthTag(data.subarray(-16));
+          const plaintext = Buffer.concat([decipher.update(data.subarray(0, -16)), decipher.final()]).toString('utf8');
+          JSON.parse(plaintext);
+          entry.value = plaintext;
+        } catch {
+          // Leave corrupt entries unreadable rather than treating them as credentials.
+        }
+      }
+    } catch {
+      // Missing or rotated keys cannot decrypt this browser session's cache.
+    }
+  }
+  return state;
+}
 
 /**
  * Classifies the best SubstrateSearch MSAL token in localStorage.

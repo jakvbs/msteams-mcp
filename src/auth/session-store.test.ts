@@ -1,10 +1,11 @@
 /**
- * Tests for getTeamsOrigin — especially New Teams (teams.cloud.microsoft)
- * SubstrateSearch token selection when multiple origins are present.
+ * Tests for Teams session decoding and origin selection.
  */
 
+import { webcrypto } from 'node:crypto';
 import { describe, it, expect } from 'vitest';
 import {
+  decodeMsalCache,
   getTeamsOrigin,
   selectLiveTeamsOrigin,
   type SessionState,
@@ -130,4 +131,64 @@ describe('getTeamsOrigin', () => {
       origins: [makeOrigin('https://teams.cloud.microsoft', [makeSubstrateEntry(expired)])],
     })).toBeNull();
   });
+});
+
+async function makeEncryptedSession() {
+  const clientId = 'test-client';
+  const key = new Uint8Array(32).fill(7);
+  const nonce = new Uint8Array(16).fill(3);
+  const baseKey = await webcrypto.subtle.importKey('raw', key, 'HKDF', false, ['deriveKey']);
+  const derivedKey = await webcrypto.subtle.deriveKey({
+    name: 'HKDF', salt: nonce, hash: 'SHA-256', info: new TextEncoder().encode(clientId),
+  }, baseKey, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
+  const token = makeSubstrateEntry();
+  const ciphertext = await webcrypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: new Uint8Array(12) }, derivedKey, new TextEncoder().encode(token.value));
+  const entry = {
+    name: `msal.2|home|login.windows.net|accesstoken|${clientId}|tenant|scope|`,
+    value: JSON.stringify({
+      id: 'key-id', nonce: Buffer.from(nonce).toString('base64url'),
+      data: Buffer.from(ciphertext).toString('base64url'), lastUpdatedAt: 'test',
+    }),
+  };
+  const state: SessionState = {
+    cookies: [{
+      name: 'msal.cache.encryption', domain: 'teams.cloud.microsoft', path: '/',
+      value: encodeURIComponent(JSON.stringify({ id: 'key-id', key: Buffer.from(key).toString('base64url') })),
+    }],
+    origins: [makeOrigin('https://teams.cloud.microsoft', [
+      { name: `msal.2.token.keys.${clientId}`, value: '{}' }, entry, makeChatSvcEntry(),
+    ])],
+  };
+  return { state, entry, token };
+}
+
+describe('decodeMsalCache', () => {
+  it('decodes browser-encrypted credentials for existing origin selection without changing plaintext entries', async () => {
+    const { state, entry, token } = await makeEncryptedSession();
+    expect(selectLiveTeamsOrigin(state)).toBeNull();
+    decodeMsalCache(state);
+    expect(entry.value).toBe(token.value);
+    expect(selectLiveTeamsOrigin(state)).toBe('https://teams.cloud.microsoft');
+    expect(state.origins[0].localStorage[2]).toEqual(makeChatSvcEntry());
+  });
+
+  it.each(['cookie domain', 'cookie id', 'ciphertext', 'app context', 'untrusted origin'])(
+    'does not decode credentials when %s is wrong',
+    async (failure) => {
+      const { state, entry } = await makeEncryptedSession();
+      if (failure === 'cookie domain') state.cookies[0].domain = 'untrusted.example';
+      if (failure === 'cookie id') state.cookies[0].value = state.cookies[0].value.replace('key-id', 'rotated-key');
+      if (failure === 'ciphertext') entry.value = entry.value.replace('"data":"', '"data":"AQ');
+      if (failure === 'app context') entry.name = entry.name.replace('test-client', 'another-client');
+      if (failure === 'untrusted origin') {
+        state.origins[0].origin = 'https://untrusted.example';
+        state.cookies[0].domain = 'untrusted.example';
+      }
+      const encryptedValue = entry.value;
+      decodeMsalCache(state);
+      expect(entry.value).toBe(encryptedValue);
+      expect(selectLiveTeamsOrigin(state)).toBeNull();
+    },
+  );
 });
