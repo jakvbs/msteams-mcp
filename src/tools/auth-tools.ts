@@ -24,7 +24,7 @@ import {
 import { createBrowserContext, closeBrowser } from '../browser/context.js';
 import * as log from '../utils/logger.js';
 import { ensureAuthenticated, forceNewLogin, getAuthStatus } from '../browser/auth.js';
-import { SignInLoopError } from '../types/errors.js';
+import { AuthenticationRequiredError, SignInLoopError, createError, ErrorCode } from '../types/errors.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -177,6 +177,9 @@ async function handleLogin(
   } catch (error) {
     if (error instanceof SignInLoopError) {
       return { success: false, error: error.toMcpError() };
+    }
+    if (error instanceof AuthenticationRequiredError) {
+      return { success: false, error: createError(ErrorCode.AUTH_REQUIRED, error.message) };
     }
     throw error;
   } finally {

@@ -10,7 +10,7 @@ import {
   OVERLAY_COMPLETE_PAUSE_MS,
 } from '../constants.js';
 import { extractSubstrateToken } from '../auth/token-extractor.js';
-import { getLiveTeamsOrigin } from '../auth/session-store.js';
+import { decodeMsalCache, getLiveTeamsOrigin } from '../auth/session-store.js';
 import * as logger from '../utils/logger.js';
 import { AuthenticationRequiredError, SignInLoopError } from '../types/errors.js';
 
@@ -401,8 +401,6 @@ export async function waitForManualLogin(
     const status = await getAuthStatus(page);
 
     if (status.isAuthenticated) {
-      log('Authentication successful!');
-
       if (showOverlay) {
         await showLoginProgress(page, 'signed-in', { pause: true });
         await showLoginProgress(page, 'saving');
@@ -411,11 +409,8 @@ export async function waitForManualLogin(
       // Wait for MSAL to store tokens in localStorage before saving session.
       // After a fresh interactive login, Teams UI can appear before token
       // acquisition completes — polling ensures tokens are captured.
-      const tokensReady = await waitForTokenRefresh(page, context, onProgress);
-      if (!tokensReady) {
-        // Tokens didn't appear within timeout — save whatever state we have
-        await saveSessionState(context);
-      }
+      await waitForTokenRefresh(page, context, onProgress);
+      log('Authentication successful!');
       log('Session state saved.');
 
       if (showOverlay) {
@@ -448,49 +443,25 @@ const TOKEN_REFRESH_WAIT_TIMEOUT_MS = 20000;
 const TOKEN_REFRESH_POLL_INTERVAL_MS = 1000;
 
 /**
- * Checks in-browser localStorage for a valid Substrate token.
- * 
- * Evaluates directly in the page context to avoid serialising the full
- * session state (~600KB) to disk on every poll. Returns the token expiry
- * in minutes, or -1 if no valid token found.
+ * Checks the current origin's localStorage and cookies for a Substrate token.
+ * Decodes MSAL in memory without saving the full session to disk on every poll.
+ * Returns the token expiry in minutes, or -1 if no valid token was found.
  */
 async function checkBrowserTokenExpiry(page: Page): Promise<number> {
   try {
-    return await page.evaluate(() => {
-      const now = Date.now();
-      let bestExpiry = -1;
-
-      for (let i = 0; i < localStorage.length; i++) {
-        const value = localStorage.getItem(localStorage.key(i)!);
-        if (!value) continue;
-
-        try {
-          const entry = JSON.parse(value);
-          const target = entry.target as string | undefined;
-          if (!target?.includes('SubstrateSearch')) continue;
-
-          const secret = entry.secret as string | undefined;
-          if (!secret?.startsWith('ey')) continue;
-
-          // Decode JWT exp claim
-          const b64 = secret.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
-          const payload = JSON.parse(atob(b64));
-          if (typeof payload.exp !== 'number') continue;
-
-          const expiryMs = payload.exp * 1000;
-          if (expiryMs <= now) continue;
-
-          const minsRemaining = Math.round((expiryMs - now) / 60000);
-          if (minsRemaining > bestExpiry) {
-            bestExpiry = minsRemaining;
-          }
-        } catch {
-          continue;
-        }
-      }
-
-      return bestExpiry;
+    const origin = await page.evaluate(() => ({
+      origin: location.origin,
+      localStorage: Object.keys(localStorage).map(name => ({
+        name,
+        value: localStorage.getItem(name) ?? '',
+      })),
+    }));
+    const state = decodeMsalCache({
+      cookies: await page.context().cookies(origin.origin),
+      origins: [origin],
     });
+    const token = extractSubstrateToken(state);
+    return token ? Math.round((token.expiry.getTime() - Date.now()) / 60000) : -1;
   } catch {
     return -1;
   }
@@ -504,14 +475,14 @@ async function checkBrowserTokenExpiry(page: Page): Promise<number> {
  * acquisition. Polls in-browser localStorage directly to avoid unnecessary
  * disk I/O, then saves session state once when tokens appear.
  * 
- * @returns true if tokens were refreshed, false if timeout
+ * @throws AuthenticationRequiredError if no usable token arrives before the timeout.
  */
 async function waitForTokenRefresh(
   page: Page,
   context: BrowserContext,
   onProgress?: (message: string) => void,
   failOnLoginRedirect: boolean = false,
-): Promise<boolean> {
+): Promise<void> {
   const log = onProgress ?? ((msg: string) => logger.debug('auth', msg));
   
   log('Waiting for MSAL to refresh tokens...');
@@ -529,7 +500,7 @@ async function waitForTokenRefresh(
       // Token found - save session state once
       await saveSessionState(context);
       log(`Token refresh detected (${minsRemaining} mins valid).`);
-      return true;
+      return;
     }
     
     // Wait and retry
@@ -537,7 +508,9 @@ async function waitForTokenRefresh(
   }
   
   log('Token refresh timed out.');
-  return false;
+  throw new AuthenticationRequiredError(
+    'Teams did not provide a valid authentication token within 20 seconds. Automatic sign-in could not complete; sign in again.',
+  );
 }
 
 /**
@@ -578,25 +551,9 @@ export async function ensureAuthenticated(
       return;
     }
     
-    // Tokens are expired - in headless mode, wait for MSAL to refresh them
-    // Teams JS will silently acquire new tokens using the session cookies
-    if (headless) {
-      log('Tokens expired, waiting for MSAL to refresh...');
-      const refreshed = await waitForTokenRefresh(page, context, onProgress, true);
-      
-      if (refreshed) {
-        return;
-      }
-      
-      // Still no valid tokens after waiting
-      throw new AuthenticationRequiredError(
-        'Teams did not provide a valid authentication token within 20 seconds. Automatic sign-in could not complete; sign in again.',
-      );
-    }
-    
-    // In visible mode, the tokens might refresh while user interacts, or they can
-    // manually complete any prompts. We've saved what we have.
-    log('Session state saved (tokens may need refresh).');
+    // Teams can render before MSAL stores tokens, including after interactive login.
+    log('Tokens expired, waiting for MSAL to refresh...');
+    await waitForTokenRefresh(page, context, onProgress, headless);
     return;
   }
 
