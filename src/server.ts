@@ -16,9 +16,6 @@ import {
   ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 
-import { createBrowserContext, closeBrowser, type BrowserManager } from './browser/context.js';
-import { ensureAuthenticated } from './browser/auth.js';
-
 // Auth modules
 import {
   hasSessionState,
@@ -30,20 +27,17 @@ import {
   extractCsaToken,
   getUserProfile,
 } from './auth/token-extractor.js';
-import { refreshTokensViaBrowser, withTokenRefreshScope, type TokenRefreshResult } from './auth/token-refresh.js';
+import { refreshTokensViaBrowser, withTokenRefreshScope } from './auth/token-refresh.js';
 
 // API modules
 import { getFavorites } from './api/csa-api.js';
 
 // Tool registry
 import { getToolDefinitions, invokeTool } from './tools/registry.js';
-import type { ToolContext } from './tools/index.js';
 
 // Types
 import { ErrorCode, createError, type McpError } from './types/errors.js';
 import * as log from './utils/logger.js';
-import type { TeamsServer as ITeamsServer } from './types/server.js';
-import type { Result } from './types/result.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MCP Server Class
@@ -51,14 +45,8 @@ import type { Result } from './types/result.js';
 
 /**
  * MCP Server for Teams integration.
- * 
- * Encapsulates all server state to allow multiple instances.
- * Implements ITeamsServer interface for use by tool handlers.
  */
-export class TeamsServer implements ITeamsServer {
-  private browserManager: BrowserManager | null = null;
-  private isInitialised = false;
-
+export class TeamsServer {
   // ───────────────────────────────────────────────────────────────────────────
   // Response Formatting
   // ───────────────────────────────────────────────────────────────────────────
@@ -100,133 +88,11 @@ export class TeamsServer implements ITeamsServer {
   }
 
   // ───────────────────────────────────────────────────────────────────────────
-  // Browser State Management (exposed for tool handlers)
-  // ───────────────────────────────────────────────────────────────────────────
-
-  /**
-   * Gets the current browser manager.
-   */
-  getBrowserManager(): BrowserManager | null {
-    return this.browserManager;
-  }
-
-  /**
-   * Sets the browser manager.
-   */
-  setBrowserManager(manager: BrowserManager): void {
-    this.browserManager = manager;
-  }
-
-  /**
-   * Resets browser state.
-   */
-  resetBrowserState(): void {
-    this.browserManager = null;
-    this.isInitialised = false;
-  }
-
-  /**
-   * Marks the server as initialised.
-   */
-  markInitialised(): void {
-    this.isInitialised = true;
-  }
-
-  /**
-   * Checks if the server is initialised.
-   */
-  isInitialisedState(): boolean {
-    return this.isInitialised;
-  }
-
-  /**
-   * Ensures the browser is running and authenticated.
-   */
-  async ensureBrowser(headless: boolean = true): Promise<BrowserManager> {
-    if (this.browserManager && this.isInitialised) {
-      return this.browserManager;
-    }
-
-    // Close existing browser if any
-    if (this.browserManager) {
-      try {
-        await closeBrowser(this.browserManager, true);
-      } catch {
-        // Ignore cleanup errors
-      }
-    }
-
-    this.browserManager = await createBrowserContext({ headless });
-
-    await ensureAuthenticated(
-      this.browserManager.page,
-      this.browserManager.context,
-      (msg) => log.info('auth', msg)
-    );
-
-    this.isInitialised = true;
-    return this.browserManager;
-  }
-
-  /**
-   * Cleans up browser resources.
-   */
-  async cleanup(): Promise<void> {
-    if (this.browserManager) {
-      await closeBrowser(this.browserManager, true);
-      this.browserManager = null;
-      this.isInitialised = false;
-    }
-  }
-
-  // ───────────────────────────────────────────────────────────────────────────
   // Auto-Login on Auth Failure
   // ───────────────────────────────────────────────────────────────────────────
 
   /** Auth tool names that should not trigger auto-login retry. */
   private static readonly AUTH_TOOL_NAMES = new Set(['teams_login', 'teams_status']);
-
-  /**
-   * Checks if an error is an authentication error that could be resolved by logging in.
-   */
-  private isAuthError(error: McpError): boolean {
-    return error.code === ErrorCode.AUTH_REQUIRED || error.code === ErrorCode.AUTH_EXPIRED;
-  }
-
-  /**
-   * Checks if a tool is an auth-related tool (login/status) that shouldn't trigger auto-login.
-   */
-  private isAuthTool(name: string): boolean {
-    return TeamsServer.AUTH_TOOL_NAMES.has(name);
-  }
-
-  /** Deduplicates concurrent auto-login attempts. */
-  private autoLoginInProgress: Promise<Result<TokenRefreshResult>> | null = null;
-
-  /**
-   * Attempts automatic re-authentication via headless browser.
-   * Preserves the recovery result so callers can distinguish login from browser failure.
-   * Concurrent calls are deduplicated — only one login runs at a time.
-   */
-  private async attemptAutoLogin(): Promise<Result<TokenRefreshResult>> {
-    if (this.autoLoginInProgress) {
-      return this.autoLoginInProgress;
-    }
-    this.autoLoginInProgress = this._attemptAutoLoginImpl();
-    try {
-      return await this.autoLoginInProgress;
-    } finally {
-      this.autoLoginInProgress = null;
-    }
-  }
-
-  private async _attemptAutoLoginImpl(): Promise<Result<TokenRefreshResult>> {
-    // The refresh orchestrator already runs ensureAuthenticated in a headless
-    // browser. Reopening it here repeats the same failed login flow.
-    const refreshResult = await refreshTokensViaBrowser();
-    if (refreshResult.ok) this.markInitialised();
-    return refreshResult;
-  }
 
   // ───────────────────────────────────────────────────────────────────────────
   // Server Creation
@@ -359,21 +225,22 @@ export class TeamsServer implements ITeamsServer {
       const { name, arguments: args } = request.params;
 
       try {
-        const ctx: ToolContext = { server: this };
-        const result = await invokeTool(name, args, ctx);
+        const result = await invokeTool(name, args);
 
         if (result.success) {
           return this.formatSuccess(result.data);
         }
 
         // Auto-login retry for auth errors (skip for login/status tools themselves)
-        if (this.isAuthError(result.error) && !this.isAuthTool(name)) {
+        const isAuthError = result.error.code === ErrorCode.AUTH_REQUIRED || result.error.code === ErrorCode.AUTH_EXPIRED;
+        if (isAuthError && !TeamsServer.AUTH_TOOL_NAMES.has(name)) {
           log.warn('auto-login', `Tool '${name}' returned ${result.error.code}, attempting automatic re-authentication...`);
-          const loginResult = await this.attemptAutoLogin();
+          // HTTP refresh, then headless browser SSO; concurrent calls share one attempt
+          const refresh = await refreshTokensViaBrowser();
 
-          if (loginResult.ok) {
+          if (refresh.ok) {
             log.info('auto-login', 'Re-authentication succeeded, retrying tool...');
-            const retryResult = await invokeTool(name, args, ctx);
+            const retryResult = await invokeTool(name, args);
             if (retryResult.success) {
               return this.formatSuccess(retryResult.data);
             }
@@ -383,7 +250,7 @@ export class TeamsServer implements ITeamsServer {
           }
 
           log.error('auto-login', 'Automatic re-authentication failed.');
-          return this.formatError(loginResult.error);
+          return this.formatError(refresh.error);
         }
 
         return this.formatError(result.error);
@@ -397,11 +264,6 @@ export class TeamsServer implements ITeamsServer {
         ));
       }
     }));
-
-    // Cleanup on server close
-    server.onclose = async () => {
-      await this.cleanup();
-    };
 
     return server;
   }
@@ -430,17 +292,6 @@ export async function runServer(): Promise<void> {
 
   await server.connect(transport);
 
-  // Handle shutdown signals
-  const shutdown = async () => {
-    try {
-      await teamsServer.cleanup();
-    } catch (err) {
-      // Best-effort cleanup — log but don't block shutdown
-      console.error('[shutdown] cleanup error (ignored):', err);
-    }
-    process.exit(0);
-  };
-
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', () => process.exit(0));
+  process.on('SIGTERM', () => process.exit(0));
 }

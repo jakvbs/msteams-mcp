@@ -30,7 +30,7 @@ it.each([
     if (!address || typeof address === 'string') throw new Error('Missing test endpoint');
     const { stdout, stderr, code } = await new Promise<{ stdout: string; stderr: string; code: string | number }>(resolve => {
       execFile(process.execPath,
-        ['--import', 'tsx', entry === 'symlink' ? linkedCli : cli, 'teams_get_out_of_office', ...(json ? ['--json'] : [])], {
+        ['--import', 'tsx', entry === 'symlink' ? linkedCli : cli, 'teams_search', '--query', 'test', ...(json ? ['--json'] : [])], {
           env: { ...process.env, HOME: home, USERPROFILE: home, APPDATA: home, LOG_LEVEL: 'warn',
             TEAMS_MCP_CDP_URL: `http://127.0.0.1:${address.port}` },
           timeout: 20_000,

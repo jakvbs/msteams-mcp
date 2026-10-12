@@ -8,7 +8,7 @@ it('executes the suggested login command outside the repository with the same CD
   const home = await mkdtemp(join(tmpdir(), 'teams-login-proof-'));
   try {
     const result = await new Promise<{ stdout: string; code: string | number }>(resolve => {
-      execFile(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'teams_get_out_of_office'], {
+      execFile(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'teams_search', '--query', 'test'], {
         env: { ...process.env, HOME: home, USERPROFILE: home, APPDATA: home,
           LOG_LEVEL: 'warn', TEAMS_MCP_CDP_URL: 'http://127.0.0.1:0' },
         timeout: 15_000,

@@ -4,7 +4,7 @@
 
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import type { RegisteredTool, ToolContext, ToolResult } from './index.js';
+import type { RegisteredTool, ToolResult } from './index.js';
 import { handleApiResult } from './index.js';
 import { searchMessages, searchEmails, searchChannels } from '../api/substrate-api.js';
 import { getThreadMessages, getConsumptionHorizon, markAsRead } from '../api/chatsvc-api.js';
@@ -38,6 +38,7 @@ export const GetThreadInputSchema = z.object({
   markRead: z.boolean().optional().default(false),
   order: z.enum(['asc', 'desc']).optional().default('desc'),
   since: z.string().optional(),
+  cursor: z.string().min(1).optional(),
 }).refine(d => d.conversationId || d.fromUrl, {
   message: 'Provide either conversationId or fromUrl',
 });
@@ -87,7 +88,7 @@ const searchToolDefinition: Tool = {
 
 const getThreadToolDefinition: Tool = {
   name: 'teams_get_thread',
-  description: 'Get messages from a Teams conversation/thread. Default: newest-first (latest messages at top). For channels: messages include isThreadReply (true for replies) and threadRootId (ID of the post being replied to). Messages without threadRootId are top-level posts. Use threadRootId to group related messages. Messages include reactions (individual reactors, names resolved where possible) and reactionSummary (counts per emoji) when present. Each message includes a "when" field with the day of week (e.g., "Friday, January 30, 2026, 10:45 AM UTC"). Returns unread count and can optionally mark as read.',
+  description: 'Get messages from a Teams conversation/thread. Default: newest-first (latest messages at top). For channels: messages include isThreadReply (true for replies) and threadRootId (ID of the post being replied to). Messages without threadRootId are top-level posts. Use threadRootId to group related messages. Messages include reactions (individual reactors, names resolved where possible) and reactionSummary (counts per emoji) when present. Each message includes a "when" field with the day of week (e.g., "Friday, January 30, 2026, 10:45 AM UTC"). Returns unread count and can optionally mark as read. Pass olderCursor back as cursor to page through older history.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -119,6 +120,10 @@ const getThreadToolDefinition: Tool = {
       since: {
         type: 'string',
         description: 'ISO 8601 timestamp (e.g., "2026-02-26T00:00:00Z"). When provided, only returns messages after this time.',
+      },
+      cursor: {
+        type: 'string',
+        description: 'The olderCursor from a previous response, to fetch the next-older page of history. Repeat until olderCursor is absent to walk a conversation back to its start. Overrides since.',
       },
     },
   },
@@ -175,8 +180,7 @@ const searchEmailToolDefinition: Tool = {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function handleSearch(
-  input: z.infer<typeof SearchInputSchema>,
-  _ctx: ToolContext
+  input: z.infer<typeof SearchInputSchema>
 ): Promise<ToolResult> {
   const result = await searchMessages(input.query, {
     maxResults: input.maxResults,
@@ -209,8 +213,7 @@ async function handleSearch(
 }
 
 async function handleGetThread(
-  input: z.infer<typeof GetThreadInputSchema>,
-  _ctx: ToolContext
+  input: z.infer<typeof GetThreadInputSchema>
 ): Promise<ToolResult> {
   // Resolve conversation and thread root from a deep link when fromUrl is given.
   let conversationId = input.conversationId;
@@ -259,6 +262,7 @@ async function handleGetThread(
     order: input.order,
     startTime,
     replyToMessageId: threadRootId,
+    cursor: input.cursor,
   });
 
   if (!result.ok) {
@@ -316,13 +320,13 @@ async function handleGetThread(
       lastReadMessageId,
       markedAsRead: input.markRead ? markedAsRead : undefined,
       messages: result.value.messages,
+      olderCursor: result.value.olderCursor,
     },
   };
 }
 
 async function handleSearchEmail(
-  input: z.infer<typeof SearchEmailInputSchema>,
-  _ctx: ToolContext
+  input: z.infer<typeof SearchEmailInputSchema>
 ): Promise<ToolResult> {
   const result = await searchEmails(input.query, {
     maxResults: input.maxResults,
@@ -359,8 +363,7 @@ async function handleSearchEmail(
 }
 
 async function handleFindChannel(
-  input: z.infer<typeof FindChannelInputSchema>,
-  _ctx: ToolContext
+  input: z.infer<typeof FindChannelInputSchema>
 ): Promise<ToolResult> {
   const result = await searchChannels(input.query, input.limit);
 

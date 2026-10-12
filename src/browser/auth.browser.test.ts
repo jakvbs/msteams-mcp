@@ -80,7 +80,7 @@ it.each([
     let browserActionError: unknown;
     const result = await new Promise<{ stdout: string; stderr: string; exitCode: string | number }>(resolve => {
       const child = execFile(process.execPath, ['--import', 'tsx', 'src/cli.ts',
-        ...(command === 'login' ? ['login', '--force', 'true'] : ['teams_set_out_of_office', '--enabled', 'true'])], {
+        ...(command === 'login' ? ['login', '--force', 'true'] : ['teams_search', '--query', 'test'])], {
           env: { ...process.env, HOME: home, USERPROFILE: home, APPDATA: home,
             LOG_LEVEL: scenario === 'late-login' || scenario === 'encrypted-token' ? 'debug' : 'warn',
             TEAMS_MCP_CDP_URL: `http://127.0.0.1:${port}` },

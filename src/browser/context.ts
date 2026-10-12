@@ -21,7 +21,7 @@ import { chromium, type Browser, type BrowserContext, type Page } from 'playwrig
 import * as fs from 'fs';
 import * as path from 'path';
 import {
-  ensureUserDataDir,
+  ensureConfigDir,
   CONFIG_DIR,
   writeSessionState,
 } from '../auth/session-store.js';
@@ -33,25 +33,12 @@ export interface BrowserManager {
   browser: Browser | null;
   context: BrowserContext;
   page: Page;
-  isNewSession: boolean;
-  /** True when the context uses the persistent browser profile. */
-  persistent: boolean;
   /**
    * True when attached to an externally running browser over CDP.
    * Callers must not clear cookies or close the context — it belongs to the user.
    */
   attached: boolean;
 }
-
-export interface CreateBrowserOptions {
-  headless?: boolean;
-  viewport?: { width: number; height: number };
-}
-
-const DEFAULT_OPTIONS: Required<CreateBrowserOptions> = {
-  headless: true,
-  viewport: { width: 1280, height: 800 },
-};
 
 /** Environment variable that switches from launching a browser to attaching over CDP. */
 export const CDP_URL_ENV = 'TEAMS_MCP_CDP_URL';
@@ -173,8 +160,6 @@ async function attachOverCdp(cdpUrl: string): Promise<BrowserManager> {
     browser,
     context,
     page,
-    isNewSession: true,
-    persistent: false,
     attached: true,
   };
 }
@@ -198,21 +183,19 @@ async function attachOverCdp(cdpUrl: string): Promise<BrowserManager> {
  * When TEAMS_MCP_CDP_URL is set, no browser is launched; the server attaches
  * to the running browser at that URL instead.
  *
- * @param options - Browser configuration options
+ * @param options.headless - Run without a visible window (default: true)
  * @returns Browser manager with context and page
  * @throws Error if system browser is not found (with helpful suggestions)
  */
 export async function createBrowserContext(
-  options: CreateBrowserOptions = {}
+  { headless = true }: { headless?: boolean } = {}
 ): Promise<BrowserManager> {
-  const opts = { ...DEFAULT_OPTIONS, ...options };
-
   const cdpUrl = process.env[CDP_URL_ENV];
   if (cdpUrl) {
     return attachOverCdp(cdpUrl);
   }
 
-  ensureUserDataDir();
+  ensureConfigDir();
 
   const channel = getBrowserChannel();
 
@@ -221,23 +204,16 @@ export async function createBrowserContext(
 
   const launchBrowser = async (): Promise<BrowserManager> => {
     const context = await chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
-      headless: opts.headless,
+      headless,
       channel,
-      viewport: opts.viewport,
+      viewport: { width: 1280, height: 800 },
       acceptDownloads: false,
     });
 
     // Persistent contexts start with one page; use it or create one
     const page = context.pages()[0] ?? await context.newPage();
 
-    return {
-      browser: null,
-      context,
-      page,
-      isNewSession: true,
-      persistent: true,
-      attached: false,
-    };
+    return { browser: null, context, page, attached: false };
   };
 
   try {
