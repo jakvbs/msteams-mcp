@@ -104,12 +104,29 @@ export function readSessionState(): SessionState | null {
   return readSecure<SessionState>(SESSION_STATE_PATH);
 }
 
+function isTeamsHostname(hostname: string): boolean {
+  return TEAMS_HOSTS.some(host => hostname === host || hostname.endsWith(`.${host}`));
+}
+
 /**
- * Writes the session state securely.
+ * Keeps only Teams cookies and Teams origins. A browser attached over CDP is
+ * the user's own profile, so its storage state also carries every other
+ * site's cookies and local storage; nothing outside Teams is read from the
+ * session, so nothing outside Teams is persisted.
+ */
+export function scopeSessionStateToTeams(state: SessionState): SessionState {
+  return {
+    cookies: state.cookies.filter(cookie => isTeamsHostname((cookie.domain ?? '').replace(/^\./, ''))),
+    origins: state.origins.filter(origin => isTeamsHostname(new URL(origin.origin).hostname)),
+  };
+}
+
+/**
+ * Writes the session state securely, limited to Teams.
  */
 export function writeSessionState(state: SessionState): void {
   ensureConfigDir();
-  writeSecure(SESSION_STATE_PATH, state);
+  writeSecure(SESSION_STATE_PATH, scopeSessionStateToTeams(state));
 }
 
 /**

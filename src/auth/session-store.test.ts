@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { getTeamsOrigin, type SessionState } from './session-store.js';
+import { getTeamsOrigin, scopeSessionStateToTeams, type SessionState } from './session-store.js';
 
 function makeOrigin(
   origin: string,
@@ -80,5 +80,34 @@ describe('getTeamsOrigin', () => {
     };
 
     expect(getTeamsOrigin(state)).toBeNull();
+  });
+});
+
+describe('scopeSessionStateToTeams', () => {
+  it('drops cookies and local storage of non-Teams sites from an attached browser profile', () => {
+    const cookie = (name: string, domain: string) => ({ name, value: 'v', domain, path: '/' });
+    const state: SessionState = {
+      cookies: [
+        cookie('skypetoken_asm', '.asyncgw.teams.microsoft.com'),
+        cookie('authtoken', 'teams.microsoft.com'),
+        cookie('msal.cache.encryption', 'teams.cloud.microsoft'),
+        cookie('SID', '.google.com'),
+        cookie('ESTSAUTH', '.login.microsoftonline.com'),
+        cookie('session', 'evilteams.microsoft.com.example'),
+      ],
+      origins: [
+        makeOrigin('https://teams.cloud.microsoft', [makeChatSvcEntry()]),
+        makeOrigin('https://www.youtube.com', [{ name: 'yt', value: 'v' }]),
+      ],
+    };
+
+    expect(scopeSessionStateToTeams(state)).toEqual({
+      cookies: [
+        cookie('skypetoken_asm', '.asyncgw.teams.microsoft.com'),
+        cookie('authtoken', 'teams.microsoft.com'),
+        cookie('msal.cache.encryption', 'teams.cloud.microsoft'),
+      ],
+      origins: [makeOrigin('https://teams.cloud.microsoft', [makeChatSvcEntry()])],
+    });
   });
 });
