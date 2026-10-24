@@ -23,7 +23,9 @@ import * as path from 'path';
 import {
   ensureConfigDir,
   CONFIG_DIR,
+  isTeamsHostname,
   writeSessionState,
+  type SessionState,
 } from '../auth/session-store.js';
 import { clearRegionCache } from '../utils/auth-guards.js';
 import * as log from '../utils/logger.js';
@@ -40,6 +42,9 @@ export interface BrowserManager {
 
 /** Environment variable that switches from launching a browser to attaching over CDP. */
 export const CDP_URL_ENV = 'TEAMS_MCP_CDP_URL';
+
+/** Default contexts of user browsers attached over CDP. */
+const attachedContexts = new WeakSet<BrowserContext>();
 
 /**
  * Directory for the persistent browser profile.
@@ -152,6 +157,7 @@ async function attachOverCdp(cdpUrl: string): Promise<BrowserManager> {
   log.info('browser', `Attaching to running browser over CDP: ${cdpUrl}`);
   const browser = await chromium.connectOverCDP(cdpUrl);
   const context = browser.contexts()[0] ?? await browser.newContext();
+  attachedContexts.add(context);
   const page = await context.newPage();
   return { context, page, browser };
 }
@@ -241,11 +247,48 @@ export async function createBrowserContext(
   }
 }
 
+/** Reads the local storage of the origin a page is on. */
+function readOriginStorage(page: Page): Promise<SessionState['origins'][number]> {
+  return page.evaluate(() => ({
+    origin: location.origin,
+    localStorage: Object.keys(localStorage).map(name => ({
+      name,
+      value: localStorage.getItem(name) ?? '',
+    })),
+  }));
+}
+
+/**
+ * Snapshots an attached browser from its open Teams tabs.
+ *
+ * Playwright's storageState() opens a helper tab and navigates it to every
+ * origin the context has seen. In the user's attached browser that tab is a
+ * real one that races Teams' sign-in redirects, so it is not used there.
+ * Returns null when no Teams tab can be read, e.g. mid-redirect.
+ */
+async function readAttachedSessionState(context: BrowserContext): Promise<SessionState | null> {
+  const origins = new Map<string, SessionState['origins'][number]>();
+  for (const page of context.pages()) {
+    if (!URL.canParse(page.url()) || !isTeamsHostname(new URL(page.url()).hostname)) continue;
+    const origin = await readOriginStorage(page).catch(() => null);
+    if (origin) origins.set(origin.origin, origin);
+  }
+  if (origins.size === 0) return null;
+  return { cookies: await context.cookies(), origins: [...origins.values()] };
+}
+
 /**
  * Saves the current browser context's session state.
+ * An attached browser with no readable Teams tab keeps the saved session.
  */
 export async function saveSessionState(context: BrowserContext): Promise<void> {
-  const state = await context.storageState();
+  const state = attachedContexts.has(context)
+    ? await readAttachedSessionState(context)
+    : await context.storageState();
+  if (!state) {
+    log.debug('browser', 'No Teams tab to read; keeping the saved session.');
+    return;
+  }
   writeSessionState(state);
   // Clear cached region config so new session values are picked up
   clearRegionCache();
@@ -256,18 +299,22 @@ export async function saveSessionState(context: BrowserContext): Promise<void> {
  *
  * When attached over CDP, only the tab opened by this server is closed and
  * the connection is dropped; the user's browser and its context stay open.
+ * Both happen even when saving fails, so no tab or connection is left behind.
  */
 export async function closeBrowser(
   manager: BrowserManager,
   saveSession: boolean = true
 ): Promise<void> {
-  if (saveSession) {
-    await saveSessionState(manager.context);
+  try {
+    if (saveSession) {
+      await saveSessionState(manager.context);
+    }
+  } finally {
+    if (manager.browser) {
+      await manager.page.close().catch(() => undefined);
+      await manager.browser.close();
+    } else {
+      await manager.context.close();
+    }
   }
-  if (manager.browser) {
-    await manager.page.close().catch(() => undefined);
-    await manager.browser.close();
-    return;
-  }
-  await manager.context.close();
 }

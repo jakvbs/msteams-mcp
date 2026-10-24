@@ -230,6 +230,8 @@ Vitest, focused on pure functions and outcomes over implementation. Tests are co
 
 Run a subset with `npx vitest run src/utils/parsers.test.ts` (one file), `npx vitest run src/auth` (a directory), or `npx vitest run -t "extractObjectId"` (by test name).
 
+Browser regressions (`src/browser/*.browser.test.ts`) run through the real CLI and isolated Chromium attached over CDP. Install their runtime with `npx playwright install --with-deps chromium` before `npm test`; CI installs the version selected by the lockfile. The fixtures intercept all page requests and do not access a live Microsoft account.
+
 ### Extending
 
 **New tool**: pick the appropriate `src/tools/*.ts` file (or add a category), define a Zod input schema and the MCP tool definition, implement the handler returning `ToolResult`, export it into the module's `*Tools` array, and register a new category in `tools/registry.ts`. Back it with `Result<T, McpError>` API functions.

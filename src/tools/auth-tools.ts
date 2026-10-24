@@ -161,10 +161,13 @@ async function loginInVisibleBrowser(): Promise<ToolResult> {
   const visible = await createBrowserContext({ headless: false });
   try {
     await ensureAuthenticated(visible.page, visible.context, (msg) => log.info('login', msg));
-  } finally {
-    // Close browser after login - we only need the saved session/tokens
-    await closeBrowser(visible, true);
+  } catch (error) {
+    // A failed sign-in has nothing worth saving, and a failing save must not hide its cause.
+    await closeBrowser(visible, false).catch(() => {});
+    throw error;
   }
+  // Close browser after login - we only need the saved session/tokens
+  await closeBrowser(visible, true);
 
   await fillCoreCredentialGaps();
 

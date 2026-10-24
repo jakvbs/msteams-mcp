@@ -80,7 +80,7 @@ If the server cannot launch a browser itself, or you want to reuse a browser you
 }
 ```
 
-`teams_login` then opens a tab in that browser, picks up the existing Microsoft session, saves the tokens and closes only its own tab. The browser must be running whenever a login or a browser-based token refresh is needed. `forceNew` deletes only the saved session in this mode, never the browser's own cookies or profile; to switch accounts, sign out in the browser.
+`teams_login` then opens a tab in that browser, picks up the existing Microsoft session, saves the tokens and closes only its own tab. It saves only Teams cookies and the local storage of open Teams tabs, and opens no other tab. The browser must be running whenever a login or a browser-based token refresh is needed. `forceNew` deletes only the saved session in this mode, never the browser's own cookies or profile; to switch accounts, sign out in the browser.
 
 ### From Source (alternative)
 

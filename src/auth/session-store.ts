@@ -104,7 +104,7 @@ export function readSessionState(): SessionState | null {
   return readSecure<SessionState>(SESSION_STATE_PATH);
 }
 
-function isTeamsHostname(hostname: string): boolean {
+export function isTeamsHostname(hostname: string): boolean {
   return TEAMS_HOSTS.some(host => hostname === host || hostname.endsWith(`.${host}`));
 }
 
