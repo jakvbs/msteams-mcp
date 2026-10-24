@@ -27,6 +27,7 @@ import { createBrowserContext, closeBrowser } from '../browser/context.js';
 import * as log from '../utils/logger.js';
 import { resetAssignmentsAvailability, clearRegionCache } from '../utils/auth-guards.js';
 import { ensureAuthenticated } from '../browser/auth.js';
+import { AuthenticationRequiredError, SignInLoopError, createError, ErrorCode } from '../types/errors.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -149,8 +150,12 @@ async function handleLogin(
       },
     };
   } catch (error) {
-    log.warn('login:headless', `Headless SSO failed, falling back to visible browser: ${error instanceof Error ? error.message : String(error)}`);
     await closeBrowser(headless, false).catch(() => {});
+    // A visible attempt would restart the same loop and extend Microsoft's block.
+    if (error instanceof SignInLoopError) {
+      return { success: false, error: error.toMcpError() };
+    }
+    log.warn('login:headless', `Headless SSO failed, falling back to visible browser: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   return loginInVisibleBrowser();
@@ -164,6 +169,12 @@ async function loginInVisibleBrowser(): Promise<ToolResult> {
   } catch (error) {
     // A failed sign-in has nothing worth saving, and a failing save must not hide its cause.
     await closeBrowser(visible, false).catch(() => {});
+    if (error instanceof SignInLoopError) {
+      return { success: false, error: error.toMcpError() };
+    }
+    if (error instanceof AuthenticationRequiredError) {
+      return { success: false, error: createError(ErrorCode.AUTH_REQUIRED, error.message) };
+    }
     throw error;
   }
   // Close browser after login - we only need the saved session/tokens

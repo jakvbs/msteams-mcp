@@ -31,8 +31,11 @@ import { renderIndex, renderToolHelp } from './cli/help.js';
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json') as { version: string };
 
-/** Login can wait on SSO/MFA in a browser; everything else uses the default. */
-const LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
+/**
+ * Every tool can enter automatic login when its tokens have expired, so every
+ * call gets the budget a browser sign-in with SSO/MFA needs.
+ */
+const TOOL_TIMEOUT_MS = 5 * 60 * 1000;
 
 async function connect(): Promise<{ client: Client; cleanup: () => Promise<void> }> {
   const server = await createServer();
@@ -102,8 +105,7 @@ async function run(argv: string[]): Promise<number> {
       return 0;
     }
 
-    const timeout = name === 'teams_login' ? LOGIN_TIMEOUT_MS : undefined;
-    const result = await client.callTool({ name, arguments: args }, undefined, { timeout });
+    const result = await client.callTool({ name, arguments: args }, undefined, { timeout: TOOL_TIMEOUT_MS });
     const payload = toolPayload(result);
     if (!payload) return result.isError ? 1 : 0;
 

@@ -1,17 +1,39 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Page } from 'playwright';
 
-vi.mock('./context.js', () => ({ saveSessionState: vi.fn() }));
+vi.mock('./context.js', () => ({
+  saveSessionState: vi.fn(),
+  readOriginStorage: (page: { evaluate: () => unknown }) => page.evaluate(),
+}));
 vi.mock('../auth/token-extractor.js', () => ({ extractSubstrateToken: vi.fn() }));
+vi.mock('../auth/session-store.js', async importOriginal => ({
+  ...await importOriginal<typeof import('../auth/session-store.js')>(),
+  getLiveTeamsOrigin: () => null,
+}));
 
+import { extractSubstrateToken } from '../auth/token-extractor.js';
 import { ensureAuthenticated, getAuthStatus, isTeamsUrl } from './auth.js';
 
-/** A page on `url` with no Teams DOM markers and `tokenMinutes` left on MSAL. */
-function fakePage(url: string, tokenMinutes: number): Page {
+/** Minutes left on the MSAL token the page holds; -1 when there is none. */
+let tokenMinutes: () => number;
+
+beforeEach(() => {
+  // The browser snapshot carries the token; the saved-session read finds none.
+  vi.mocked(extractSubstrateToken).mockImplementation(state => {
+    if (!state) return null;
+    const minutes = tokenMinutes();
+    return minutes > 0 ? { token: 'token', expiry: new Date(Date.now() + minutes * 60_000) } as never : null;
+  });
+});
+
+/** A page on `url` with no Teams DOM markers whose storage holds the token `tokenMinutes` reports. */
+function fakePage(url: string, overrides: Partial<Record<keyof Page, unknown>> = {}): Page {
   return {
     url: () => url,
     locator: () => ({ count: async () => 0 }),
-    evaluate: async () => tokenMinutes,
+    evaluate: async () => ({ origin: new URL(url).origin, localStorage: [] }),
+    context: () => ({ cookies: async () => [] }),
+    ...overrides,
   } as unknown as Page;
 }
 
@@ -37,20 +59,23 @@ describe('isTeamsUrl', () => {
 
 describe('getAuthStatus', () => {
   it('detects a completed login from the MSAL token alone', async () => {
-    const status = await getAuthStatus(fakePage('https://teams.cloud.microsoft/', 55));
+    tokenMinutes = () => 55;
+    const status = await getAuthStatus(fakePage('https://teams.cloud.microsoft/'));
 
     expect(status.isAuthenticated).toBe(true);
     expect(status.isOnLoginPage).toBe(false);
   });
 
   it('stays unauthenticated on a Teams host with no token', async () => {
-    const status = await getAuthStatus(fakePage('https://teams.cloud.microsoft/', -1));
+    tokenMinutes = () => -1;
+    const status = await getAuthStatus(fakePage('https://teams.cloud.microsoft/'));
 
     expect(status.isAuthenticated).toBe(false);
   });
 
   it('reports the login page', async () => {
-    const status = await getAuthStatus(fakePage('https://login.microsoftonline.com/common/oauth2', 99));
+    tokenMinutes = () => 99;
+    const status = await getAuthStatus(fakePage('https://login.microsoftonline.com/common/oauth2'));
 
     expect(status).toMatchObject({ isAuthenticated: false, isOnLoginPage: true });
   });
@@ -60,20 +85,19 @@ describe('ensureAuthenticated', () => {
   it('keeps a visible browser open for sign-in when Teams loads with expired tokens', async () => {
     // Teams can render without redirecting to login while the Microsoft SSO
     // session is gone; only a fresh MSAL token proves the user has signed in.
-    const tokenMinutes = [-1, -1, 55];
-    const page = {
+    const minutes = [-1, -1, 55];
+    tokenMinutes = () => minutes.length > 1 ? minutes.shift()! : minutes[0];
+    const page = fakePage('https://teams.cloud.microsoft/', {
       goto: async () => null,
       waitForURL: async () => { throw new Error('timeout'); },
-      url: () => 'https://teams.cloud.microsoft/',
-      evaluate: async () => tokenMinutes.length > 1 ? tokenMinutes.shift()! : tokenMinutes[0],
       waitForTimeout: async () => {},
-    } as unknown as Page;
+    });
     const messages: string[] = [];
 
     await ensureAuthenticated(page, {} as never, msg => messages.push(msg), false, false);
 
     expect(messages).toContain('Waiting for manual login...');
     expect(messages).toContain('Authentication successful!');
-    expect(tokenMinutes).toEqual([55]);
+    expect(minutes).toEqual([55]);
   });
 });

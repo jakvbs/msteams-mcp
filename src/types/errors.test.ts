@@ -16,7 +16,8 @@ describe('createError', () => {
     expect(error.code).toBe(ErrorCode.AUTH_REQUIRED);
     expect(error.message).toBe('Not authenticated');
     expect(error.retryable).toBe(false);
-    expect(error.suggestions).toContain('IMMEDIATELY call teams_login with { "forceNew": true } to authenticate');
+    expect(error.suggestions).toContain('Run msteams login --force true and complete sign-in in the browser');
+    expect(error.suggestions).toContain('MCP clients: call teams_login with { "forceNew": true }');
   });
 
   it('creates retryable error for RATE_LIMITED by default', () => {

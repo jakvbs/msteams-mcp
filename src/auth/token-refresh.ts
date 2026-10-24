@@ -18,7 +18,8 @@
  * First login always requires a browser — there's no refresh token to use yet.
  */
 
-import { ErrorCode, createError } from '../types/errors.js';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { AuthenticationRequiredError, ErrorCode, SignInLoopError, createError } from '../types/errors.js';
 import { type Result, ok, err } from '../types/result.js';
 import {
   extractSubstrateToken,
@@ -41,11 +42,23 @@ function serializeRefresh<T>(refresh: () => Promise<T>): Promise<T> {
   return pending;
 }
 
+// A tool guard and the server's auth retry share one recovery result, including
+// failure, so a failed browser flow is not repeated within one MCP request.
+// A later request gets a fresh scope and may try again.
+const requestRefresh = new AsyncLocalStorage<{ result?: Promise<Result<void>> }>();
+
+export function withTokenRefreshScope<T>(run: () => Promise<T>): Promise<T> {
+  return requestRefresh.run({}, run);
+}
+
 /** Refresh core Teams credentials, with browser fallback. */
 export function refreshTokensViaBrowser(): Promise<Result<void>> {
+  const scope = requestRefresh.getStore();
+  if (scope?.result) return scope.result;
   if (!coreRefresh) {
     coreRefresh = serializeRefresh(refreshCoreTokens).finally(() => { coreRefresh = undefined; });
   }
+  if (scope) scope.result = coreRefresh;
   return coreRefresh;
 }
 
@@ -92,7 +105,11 @@ async function refreshCoreTokens(): Promise<Result<void>> {
     : `HTTP refresh failed: ${httpResult.error.message}, falling back to browser (session cookies may still be valid)`);
 
   // ── Strategy 2: Browser refresh (fallback) ──────────────────────────
-  return refreshViaHeadlessBrowser();
+  const browserResult = await refreshViaHeadlessBrowser();
+  if (!browserResult.ok) {
+    log.warn('token-refresh', browserResult.error.message);
+  }
+  return browserResult;
 }
 
 /**
@@ -122,13 +139,22 @@ async function refreshViaHeadlessBrowser(): Promise<Result<void>> {
     }
     return ok(undefined);
   } catch (error) {
+    const pageClosed = manager?.page.isClosed() ?? false;
     if (manager) {
       await closeBrowser(manager, false).catch(() => {});
     }
+    if (error instanceof SignInLoopError) {
+      return err(error.toMcpError());
+    }
+    if (error instanceof AuthenticationRequiredError) {
+      return err(createError(ErrorCode.AUTH_REQUIRED, error.message));
+    }
     const message = error instanceof Error ? error.message : 'Unknown error';
     return err(createError(
-      ErrorCode.UNKNOWN,
-      `Token refresh via browser failed: ${message}. Call teams_login to re-authenticate.`,
+      ErrorCode.BROWSER_ERROR,
+      pageClosed
+        ? 'Browser sign-in was interrupted: the tab or browser was closed.'
+        : `Token refresh via browser failed: ${message}`,
     ));
   }
 }

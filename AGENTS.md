@@ -88,7 +88,8 @@ src/
 - **Shared constants**: Magic numbers (page sizes, timeouts, thresholds) live in `constants.ts`.
 - **MCP resources**: Passive resources (`teams://me/profile`, `teams://me/favorites`, `teams://status`) provide context discovery without tool calls.
 - **Markdown to Teams HTML**: `markdownToTeamsHtml()` in `utils/parsers.ts` converts markdown (bold, italic, code, code blocks, strikethrough, lists, newlines) to the `RichText/Html` Teams expects. Used by `sendMessage()` and `editMessage()`. When messages contain @mentions or links, `parseContentWithMentionsAndLinks()` applies the same conversion to text between inline elements.
-- **Auto-login on auth failure**: The `CallToolRequestSchema` handler in `server.ts` retries tool calls that fail with `AUTH_REQUIRED`/`AUTH_EXPIRED`, after one core refresh (`refreshTokensViaBrowser()`: HTTP refresh, then headless browser SSO). Auth tools (`teams_login`, `teams_status`) are excluded to avoid loops. Concurrent failures share the same in-flight refresh, so only one runs at a time.
+- **Auto-login on auth failure**: The `CallToolRequestSchema` handler in `server.ts` retries tool calls that fail with `AUTH_REQUIRED`/`AUTH_EXPIRED`, after one core refresh (`refreshTokensViaBrowser()`: HTTP refresh, then headless browser SSO). Concurrent failures share the same in-flight refresh, so only one runs at a time. Within one tool call, the guard and the server retry share one recovery result via `withTokenRefreshScope()` in `auth/token-refresh.ts`; a failed browser flow is logged, not repeated, and its error is returned to the caller. Auth tools (`teams_login`, `teams_status`) are excluded to avoid loops. The CLI gives automatic recovery the same timeout budget as explicit login; other MCP clients control their own request deadlines.
+- **Authentication errors**: A detected sign-in page (including a late redirect) or failure to obtain usable tokens during silent recovery returns `AUTH_REQUIRED`; a closed tab or failed browser connection returns `BROWSER_ERROR`. Missing tokens alone do not prove the browser is signed out. When the Microsoft sign-in page reports AADSTS50196 (request loop), silent and interactive login stop at once with `AUTH_REQUIRED` and loop-specific suggestions, without opening another sign-in tab; waiting would keep the loop and Microsoft's block alive.
 
 ### Dynamic Configuration from Session
 
@@ -174,8 +175,8 @@ npm run dev           # Run MCP server in development mode
 npm run build         # Compile TypeScript
 npm run lint          # Run ESLint (lint:fix to auto-fix)
 npm start             # Run compiled MCP server
-npm test              # Run unit tests
-npm run test:watch    # Unit tests in watch mode
+npm test              # Run unit and integration tests
+npm run test:watch    # Tests in watch mode
 npm run test:coverage # Coverage report
 npm run typecheck     # Type checking only
 ```
@@ -249,6 +250,8 @@ When a roadmap item is completed, remove it entirely from `ROADMAP.md` - do not 
 **Browser won't launch (login)**: ensure Chrome (macOS/Linux) or Edge (Windows) is installed; as a fallback run `npx playwright install chromium`; check for browser processes holding the profile lock.
 
 **Login timeout with MFA**: MCP clients have request timeouts (2-5 min). If SSO/MFA takes longer, the request times out but login continues in the background - completing MFA in the browser saves the session and later calls work. This is rare because headless SSO is tried first and a visible browser only opens when credentials are actually required.
+
+**Sign-in loop (AADSTS50196)**: If Teams web in the browser keeps restarting sign-in after Microsoft returns an authorization code, Microsoft eventually blocks the Teams client for that browser session and its sign-in page reloads itself. The block lapses a few minutes after the last attempt. Login reports this instead of waiting; the loop itself is in the browser's Teams web session, so confirm Teams loads at `https://teams.cloud.microsoft` in that browser before logging in again.
 
 **Search misses thread replies**: Substrate search is full-text and only returns messages matching the terms. A reply that does not contain the search keywords will not appear even if it is a direct reply. Workaround: after finding a message, use `teams_get_thread` with its `conversationId` for full context.
 

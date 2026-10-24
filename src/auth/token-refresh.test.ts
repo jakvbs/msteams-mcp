@@ -15,7 +15,7 @@ vi.mock('./token-refresh-http.js', () => ({
   refreshTokensViaHttp: vi.fn(),
 }));
 
-import { refreshTokensViaBrowser } from './token-refresh.js';
+import { refreshTokensViaBrowser, withTokenRefreshScope } from './token-refresh.js';
 import { extractSubstrateToken } from './token-extractor.js';
 import { refreshTokensViaHttp } from './token-refresh-http.js';
 import { createBrowserContext } from '../browser/context.js';
@@ -37,5 +37,21 @@ describe('refreshTokensViaBrowser', () => {
     expect(refreshTokensViaHttp).toHaveBeenCalledOnce();
     expect(createBrowserContext).not.toHaveBeenCalled();
     expect(result.ok).toBe(true);
+  });
+
+  it('shares one failed recovery within a request scope', async () => {
+    vi.mocked(extractSubstrateToken).mockReturnValue(null);
+    vi.mocked(refreshTokensViaHttp).mockResolvedValue({ ok: true, value: undefined });
+    vi.mocked(createBrowserContext).mockRejectedValue(new Error('no browser'));
+
+    await withTokenRefreshScope(async () => {
+      const first = await refreshTokensViaBrowser();
+      const second = await refreshTokensViaBrowser();
+      expect(first.ok).toBe(false);
+      expect(second).toBe(first);
+    });
+
+    expect(refreshTokensViaHttp).toHaveBeenCalledOnce();
+    expect(createBrowserContext).toHaveBeenCalledOnce();
   });
 });

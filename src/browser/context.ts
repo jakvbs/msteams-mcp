@@ -248,7 +248,7 @@ export async function createBrowserContext(
 }
 
 /** Reads the local storage of the origin a page is on. */
-function readOriginStorage(page: Page): Promise<SessionState['origins'][number]> {
+export function readOriginStorage(page: Page): Promise<SessionState['origins'][number]> {
   return page.evaluate(() => ({
     origin: location.origin,
     localStorage: Object.keys(localStorage).map(name => ({

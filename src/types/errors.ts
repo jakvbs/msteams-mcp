@@ -33,6 +33,30 @@ export enum ErrorCode {
   UNKNOWN = 'UNKNOWN',
 }
 
+/** Browser authentication requires user interaction to obtain usable tokens. */
+export class AuthenticationRequiredError extends Error {}
+
+/**
+ * Microsoft sign-in blocked Teams for restarting sign-in repeatedly (AADSTS50196).
+ * Another sign-in attempt prolongs the block, so recovery must stop and tell the user.
+ */
+export class SignInLoopError extends Error {
+  constructor() {
+    super('Microsoft sign-in stopped Teams because it detected a sign-in loop (AADSTS50196): '
+      + 'the Teams web app in this browser keeps restarting sign-in.');
+  }
+
+  toMcpError(): McpError {
+    return createError(ErrorCode.AUTH_REQUIRED, this.message, {
+      suggestions: [
+        'Close all Teams tabs in the browser and wait about 5 minutes; Microsoft keeps blocking sign-in while the loop continues',
+        'Then open https://teams.cloud.microsoft in that browser and confirm Teams loads; if it keeps returning to Microsoft sign-in, clear the site data for teams.cloud.microsoft and sign in there',
+        'Run msteams login --force true after Teams loads in the browser',
+      ],
+    });
+  }
+}
+
 /** Structured error with machine-readable information. */
 export interface McpError {
   /** Machine-readable error code. */
@@ -76,15 +100,10 @@ export function createError(
 function getDefaultSuggestions(code: ErrorCode): string[] {
   switch (code) {
     case ErrorCode.AUTH_REQUIRED:
-      return [
-        'IMMEDIATELY call teams_login with { "forceNew": true } to authenticate',
-        'Do NOT skip this step or tell the user Teams is unavailable',
-        'After login succeeds, retry the original request',
-      ];
     case ErrorCode.AUTH_EXPIRED:
       return [
-        'IMMEDIATELY call teams_login with { "forceNew": true } to refresh authentication',
-        'Do NOT skip this step or tell the user Teams is unavailable',
+        'Run msteams login --force true and complete sign-in in the browser',
+        'MCP clients: call teams_login with { "forceNew": true }',
         'After login succeeds, retry the original request',
       ];
     case ErrorCode.RATE_LIMITED:
@@ -103,7 +122,11 @@ function getDefaultSuggestions(code: ErrorCode): string[] {
     case ErrorCode.API_ERROR:
       return ['Retry the request', 'Check teams_status for system health'];
     case ErrorCode.BROWSER_ERROR:
-      return ['Call teams_login to restart browser session'];
+      return [
+        'Check that the browser is running and its CDP endpoint is reachable',
+        'Run msteams login --force true and keep the sign-in tab open until login completes',
+        'MCP clients: call teams_login with { "forceNew": true }',
+      ];
     case ErrorCode.NETWORK_ERROR:
       return ['Check network connectivity', 'Retry the request'];
     case ErrorCode.TIMEOUT:

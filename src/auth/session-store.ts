@@ -13,6 +13,8 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { createDecipheriv, hkdfSync } from 'node:crypto';
+import { z } from 'zod';
 import { encrypt, decrypt } from './crypto.js';
 import { SESSION_EXPIRY_HOURS, TEAMS_HOSTS } from '../constants.js';
 import * as log from '../utils/logger.js';
@@ -101,7 +103,8 @@ export function hasSessionState(): boolean {
  * Reads the session state.
  */
 export function readSessionState(): SessionState | null {
-  return readSecure<SessionState>(SESSION_STATE_PATH);
+  const state = readSecure<SessionState>(SESSION_STATE_PATH);
+  return state ? decodeMsalCache(state) : null;
 }
 
 export function isTeamsHostname(hostname: string): boolean {
@@ -198,27 +201,123 @@ export function clearTokenCache(): void {
  */
 const TEAMS_ORIGINS = TEAMS_HOSTS.map(host => `https://${host}`);
 
+const MsalEncryptionCookieSchema = z.object({ id: z.string(), key: z.string() });
+const MsalEncryptedEntrySchema = z.object({
+  id: z.string(),
+  nonce: z.string(),
+  data: z.string(),
+});
+
 /**
- * Returns true if localStorage has a SubstrateSearch MSAL token entry.
+ * Decodes MSAL's encrypted cache in a detached session snapshot, never in the browser.
+ * Wire format: msal-browser-v5.6.3 LocalStorage.getContext and BrowserCrypto.decrypt.
  */
-function hasSubstrateSearchToken(
-  localStorage: SessionState['origins'][number]['localStorage'] | undefined
-): boolean {
-  for (const item of localStorage ?? []) {
+export function decodeMsalCache(state: SessionState): SessionState {
+  for (const origin of state.origins) {
+    if (!TEAMS_ORIGINS.includes(origin.origin)) continue;
+    const hostname = new URL(origin.origin).hostname;
+    const cookie = state.cookies.find(candidate =>
+      candidate.name === 'msal.cache.encryption'
+      && candidate.domain?.replace(/^\./, '') === hostname
+      && (candidate.path === '/' || candidate.path === undefined));
+    if (!cookie) continue;
+
     try {
-      const entry = JSON.parse(item.value) as { target?: string; secret?: string };
-      if (
-        entry.target?.includes('SubstrateSearch') &&
-        typeof entry.secret === 'string' &&
-        entry.secret.startsWith('ey')
-      ) {
-        return true;
+      const key = MsalEncryptionCookieSchema.parse(JSON.parse(decodeURIComponent(cookie.value)));
+      const baseKey = Buffer.from(key.key, 'base64url');
+      if (baseKey.length !== 32) continue;
+      const clientIds = origin.localStorage.flatMap(entry =>
+        entry.name.match(/^msal(?:\.\d+)?\.token\.keys\.(.+)$/)?.slice(1) ?? []);
+
+      for (const entry of origin.localStorage) {
+        if (!entry.name.startsWith('msal.')) continue;
+        try {
+          const encrypted = MsalEncryptedEntrySchema.safeParse(JSON.parse(entry.value));
+          if (!encrypted.success || encrypted.data.id !== key.id) continue;
+          const nonce = Buffer.from(encrypted.data.nonce, 'base64url');
+          if (nonce.length !== 16) continue;
+          const context = clientIds.find(clientId => entry.name.includes(clientId)) ?? '';
+          const derivedKey = hkdfSync('sha256', baseKey, nonce, context, 32);
+          const data = Buffer.from(encrypted.data.data, 'base64url');
+          // MSAL derives a new key per nonce, so AES-GCM uses a zero IV.
+          const decipher = createDecipheriv('aes-256-gcm', Buffer.from(derivedKey), Buffer.alloc(12));
+          decipher.setAuthTag(data.subarray(-16));
+          const plaintext = Buffer.concat([decipher.update(data.subarray(0, -16)), decipher.final()]).toString('utf8');
+          JSON.parse(plaintext);
+          entry.value = plaintext;
+        } catch {
+          // Leave corrupt entries unreadable rather than treating them as credentials.
+        }
       }
     } catch {
-      // ignore non-JSON localStorage values
+      // Missing or rotated keys cannot decrypt this browser session's cache.
     }
   }
-  return false;
+  return state;
+}
+
+/**
+ * Classifies the best SubstrateSearch MSAL token in localStorage.
+ * Expired tokens remain useful because their MSAL metadata can drive refresh.
+ */
+function getSubstrateSearchTokenState(
+  localStorage: SessionState['origins'][number]['localStorage'] | undefined
+): 'fresh' | 'expired' | null {
+  let hasExpiredToken = false;
+
+  for (const item of localStorage ?? []) {
+    try {
+      const entry: unknown = JSON.parse(item.value);
+      if (typeof entry !== 'object' || entry === null) continue;
+      if (!('target' in entry) || typeof entry.target !== 'string') continue;
+      if (!entry.target.includes('SubstrateSearch')) continue;
+      if (!('secret' in entry) || typeof entry.secret !== 'string') continue;
+
+      const payloadSegment = entry.secret.split('.')[1];
+      if (!payloadSegment) continue;
+
+      const payload: unknown = JSON.parse(Buffer.from(payloadSegment, 'base64url').toString());
+      if (
+        typeof payload !== 'object' ||
+        payload === null ||
+        !('exp' in payload) ||
+        typeof payload.exp !== 'number'
+      ) {
+        continue;
+      }
+
+      if (payload.exp * 1000 > Date.now()) return 'fresh';
+      hasExpiredToken = true;
+    } catch {
+      // ignore non-JSON localStorage values and malformed JWTs
+    }
+  }
+
+  return hasExpiredToken ? 'expired' : null;
+}
+
+/**
+ * Selects a trusted Teams origin with a fresh SubstrateSearch token.
+ */
+export function selectLiveTeamsOrigin(state: SessionState): string | null {
+  for (const knownOrigin of TEAMS_ORIGINS) {
+    const origin = state.origins.find(candidate => candidate.origin === knownOrigin);
+    if (getSubstrateSearchTokenState(origin?.localStorage) === 'fresh') return knownOrigin;
+  }
+
+  return null;
+}
+
+/**
+ * Gets a trusted, live Teams origin from the persisted session.
+ */
+export function getLiveTeamsOrigin(): string | null {
+  try {
+    const state = readSessionState();
+    return state ? selectLiveTeamsOrigin(state) : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -233,8 +332,18 @@ function hasSubstrateSearchToken(
 export function getTeamsOrigin(state: SessionState): SessionState['origins'][number] | null {
   if (!state.origins) return null;
 
-  const withSubstrate = state.origins.find(o => hasSubstrateSearchToken(o.localStorage));
-  if (withSubstrate) return withSubstrate;
+  // Prefer fresh credentials only from exact, trusted Teams origins. If none
+  // are fresh, retain an expired token's MSAL metadata for HTTP refresh.
+  let expiredOrigin: SessionState['origins'][number] | null = null;
+  for (const knownOrigin of TEAMS_ORIGINS) {
+    const origin = state.origins.find(o => o.origin === knownOrigin);
+    if (!origin) continue;
+
+    const tokenState = getSubstrateSearchTokenState(origin.localStorage);
+    if (tokenState === 'fresh') return origin;
+    if (tokenState === 'expired' && !expiredOrigin) expiredOrigin = origin;
+  }
+  if (expiredOrigin) return expiredOrigin;
 
   // Try known Teams origins in priority order
   for (const knownOrigin of TEAMS_ORIGINS) {
